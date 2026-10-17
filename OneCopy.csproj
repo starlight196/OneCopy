@@ -9,19 +9,25 @@
     <AssemblyName>OneCopy</AssemblyName>
     <RootNamespace>OneCopy</RootNamespace>
     <AssemblyTitle>OneCopy 重复文件清理工具</AssemblyTitle>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationUseVisualStyles>true</ApplicationUseVisualStyles>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
 
     <!-- 版本信息 -->
-    <Version>1.5.0</Version>
-    <AssemblyVersion>1.5.0.0</AssemblyVersion>
-    <FileVersion>1.5.0.0</FileVersion>
-    <InformationalVersion>1.5.0</InformationalVersion>
+    <Version>1.5.1</Version>
+    <AssemblyVersion>1.5.1.0</AssemblyVersion>
+    <FileVersion>1.5.1.0</FileVersion>
+    <InformationalVersion>1.5.1</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>OneCopy 重复文件清理工具</Product>
-    <Description>只留一份：基于 SHA-256 的重复文件查找与清理工具</Description>
+    <Description>只留一份：支持 SHA-256 / XXH3-128 / BLAKE3 的重复文件查找与清理工具</Description>
     <Authors>starlight196</Authors>
     <Copyright>Copyright (C) 2026 starlight196</Copyright>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 多尺寸应用图标（16-256px），同时用于 exe 文件图标和窗口图标 -->
+    <EmbeddedResource Include="app.ico" />
+  </ItemGroup>
 
 </Project>

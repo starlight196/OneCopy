@@ -1,6 +1,6 @@
 # OneCopy 重复文件清理工具
 
-> 只留一份，其余清掉。 ｜ 当前版本：**v1.5.0** ｜ [更新日志](CHANGELOG.md) ｜ [GPL-3.0 许可证](LICENSE)
+> 只留一份，其余清掉。 ｜ 当前版本：**v1.5.1** ｜ [更新日志](CHANGELOG.md) ｜ [GPL-3.0 许可证](LICENSE)
 
 **OneCopy** 是一个 Windows 原生桌面程序：扫描指定目录下内容完全相同的文件，按哈希分组展示，帮你只保留一份、安全地清掉多余副本。
 
@@ -80,10 +80,11 @@ OneCopy/
 ├── HashSelfTest.cs         # Debug 哈希算法测试向量自检（Release 不编译）
 ├── CHANGELOG.md            # 更新日志
 ├── LICENSE                 # GNU GPL v3.0 许可证
+├── app.ico                 # 多尺寸应用图标（exe 文件 / 窗口 / 任务栏）
 ├── OneCopy.csproj
 └── publish/                # 发布输出（git 忽略）
-    ├── OneCopy.exe                     # 单文件可执行程序（v1.5.0）
-    └── OneCopy-v1.5.0.zip              # 发布压缩包
+    ├── OneCopy.exe                     # 单文件可执行程序（v1.5.1）
+    └── OneCopy-v1.5.1.zip              # 发布压缩包
 ```
 
 ## 许可

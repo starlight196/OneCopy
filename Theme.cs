@@ -132,6 +132,7 @@ internal static class Theme
     private static readonly string Family = ResolveFamily();
     private static readonly Dictionary<string, Font> Cache = new();
     private static Icon? _appIcon;
+    private static MemoryStream? _appIconStream;
 
     public static Font UI => Font(9.75f, FontStyle.Regular);
     public static Font UIBold => Font(9.75f, FontStyle.Bold);
@@ -174,6 +175,24 @@ internal static class Theme
 
     private static Icon CreateAppIcon()
     {
+        // 优先读取项目里嵌入的多尺寸 app.ico，窗口 / 任务栏 / 文件图标保持一致
+        try
+        {
+            using Stream? resource = typeof(Theme).Assembly.GetManifestResourceStream("OneCopy.app.ico");
+            if (resource is not null)
+            {
+                using var buffer = new MemoryStream();
+                resource.CopyTo(buffer);
+                // Icon(Stream) 要求流在图标生命周期内保持打开，这里保留一个静态流
+                _appIconStream = new MemoryStream(buffer.ToArray());
+                return new Icon(_appIconStream);
+            }
+        }
+        catch
+        {
+            // 读不到嵌入图标时退回下面的自绘图标
+        }
+
         using var bitmap = new Bitmap(64, 64);
         using (Graphics g = Graphics.FromImage(bitmap))
         {
