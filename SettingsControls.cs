@@ -275,3 +275,219 @@ internal sealed class MultilineInput : PaintedControl
         _input.Focus();
     }
 }
+
+/// <summary>
+/// 数字输入框：圆角输入框 + 内嵌文本框 + 右侧上下微调箭头。
+/// 支持键盘 ↑ / ↓、Enter 提交，输入非法时恢复上一个有效值。
+/// </summary>
+internal sealed class NumberField : PaintedControl
+{
+    private readonly TextBox _input;
+    private int _value;
+    private int _minimum = 1;
+    private int _maximum = 64;
+    private bool _hover;
+    private bool _focused;
+    private bool _dimmed;
+
+    public event EventHandler? ValueChanged;
+
+    public NumberField()
+    {
+        Cursor = Cursors.Hand;
+
+        _input = new TextBox
+        {
+            BorderStyle = BorderStyle.None,
+            BackColor = Theme.Input,
+            ForeColor = Theme.TextPrimary,
+            Font = Theme.UI,
+            TextAlign = HorizontalAlignment.Center,
+            MaxLength = 6,
+        };
+        Controls.Add(_input);
+
+        _input.GotFocus += (_, _) =>
+        {
+            _focused = true;
+            Invalidate();
+        };
+        _input.LostFocus += (_, _) =>
+        {
+            _focused = false;
+            TryCommit();
+            Invalidate();
+        };
+        _input.KeyDown += OnInputKeyDown;
+
+        Height = 34;
+        Width = 120;
+        Value = 1;
+    }
+
+    public int Minimum
+    {
+        get => _minimum;
+        set
+        {
+            _minimum = value;
+            if (_maximum < _minimum) _maximum = _minimum;
+            Value = Math.Clamp(_value, _minimum, _maximum);
+        }
+    }
+
+    public int Maximum
+    {
+        get => _maximum;
+        set
+        {
+            _maximum = Math.Max(value, _minimum);
+            Value = Math.Clamp(_value, _minimum, _maximum);
+        }
+    }
+
+    public int Value
+    {
+        get => _value;
+        set
+        {
+            int clamped = Math.Clamp(value, _minimum, _maximum);
+            bool changed = clamped != _value;
+            _value = clamped;
+            _input.Text = clamped.ToString();
+            Invalidate();
+            if (changed) ValueChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <summary>变灰（只读）状态，用于开关关闭时。</summary>
+    public bool Dimmed
+    {
+        get => _dimmed;
+        set
+        {
+            if (_dimmed == value) return;
+            _dimmed = value;
+            _input.ReadOnly = value;
+            _input.BackColor = value ? Theme.DisabledFill : Theme.Input;
+            _input.ForeColor = value ? Theme.DisabledText : Theme.TextPrimary;
+            Cursor = value ? Cursors.Default : Cursors.Hand;
+            Invalidate();
+        }
+    }
+
+    public bool TryCommit()
+    {
+        if (int.TryParse(_input.Text.Trim(), out int parsed))
+        {
+            Value = parsed;
+            _input.Text = _value.ToString();
+            return true;
+        }
+
+        _input.Text = _value.ToString();
+        return false;
+    }
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+        if (_input is null) return;
+        int inputHeight = Math.Max(Px(16), _input.PreferredHeight);
+        int chevronWidth = Px(26);
+        _input.Bounds = new Rectangle(
+            Px(10),
+            Math.Max(0, (Height - inputHeight) / 2),
+            Math.Max(0, Width - Px(10) - chevronWidth - Px(6)),
+            inputHeight);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var rect = new RectangleF(0.5f, 0.5f, Math.Max(0, Width - 1.5f), Math.Max(0, Height - 1.5f));
+        Theme.FillRound(g, rect, Px(8), _dimmed ? Theme.DisabledFill : Theme.Input);
+
+        Color border = _dimmed ? Theme.Separator
+            : _focused ? Theme.Accent
+            : _hover ? Theme.BorderStrong
+            : Theme.Border;
+        Theme.StrokeRound(g, rect, Px(8), border, _focused && !_dimmed ? Math.Max(1.5f, Px(1.3f)) : 1f);
+
+        Color arrowColor = _dimmed ? Theme.DisabledText : Theme.TextSecondary;
+        float cx = Width - Px(13);
+        using var pen = new Pen(arrowColor, Math.Max(1.2f, Px(1.2f)))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
+        float half = Px(4);
+        float upY = Height * 0.32f;
+        float downY = Height * 0.68f;
+        g.DrawLines(pen, new[] { new PointF(cx - half, upY + Px(2)), new PointF(cx, upY), new PointF(cx + half, upY + Px(2)) });
+        g.DrawLines(pen, new[] { new PointF(cx - half, downY - Px(2)), new PointF(cx, downY), new PointF(cx + half, downY - Px(2)) });
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hover = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hover = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (_dimmed || e.Button != MouseButtons.Left) return;
+
+        int chevronLeft = Width - Px(28);
+        if (e.X >= chevronLeft)
+        {
+            if (e.Y < Height / 2f) Value = _value + 1;
+            else Value = _value - 1;
+            return;
+        }
+
+        _input.Focus();
+        _input.SelectAll();
+    }
+
+    private void OnInputKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (_dimmed)
+        {
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (e.KeyCode is Keys.Up or Keys.Down)
+        {
+            Value = e.KeyCode == Keys.Up ? _value + 1 : _value - 1;
+            _input.SelectAll();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+        else if (e.KeyCode == Keys.Enter)
+        {
+            TryCommit();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        Invalidate();
+        base.OnEnabledChanged(e);
+    }
+}

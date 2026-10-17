@@ -362,55 +362,46 @@ internal sealed class CaptionButton : PaintedControl
                 break;
 
             case CaptionKind.Settings:
-                DrawSettingsGlyph(g, glyph, highlight ? hoverBackground : Theme.Surface, cx, cy);
+                DrawSettingsGlyph(g, glyph, cx, cy);
                 break;
         }
     }
 
-    /// <summary>齿轮图标：8 个梯形齿 + 实心圆盘 + 中心镂空，小尺寸下也能明确识别。</summary>
-    private void DrawSettingsGlyph(Graphics g, Color glyph, Color background, float cx, float cy)
+    /// <summary>
+    /// 简约风格齿轮：细描边外圈 + 中心小圆 + 6 个圆头短齿。
+    /// 只用线条，不填充实心块，视觉上更轻。
+    /// </summary>
+    private void DrawSettingsGlyph(Graphics g, Color glyph, float cx, float cy)
     {
-        float root = Px(4.9f);    // 齿根半径
-        float tip = Px(8.1f);     // 齿顶半径
-        float halfTip = Px(1.75f); // 齿顶半宽
-        float halfRoot = halfTip * 1.35f;
-
-        using var path = new GraphicsPath(FillMode.Winding);
-        for (int i = 0; i < 8; i++)
+        using var ringPen = new Pen(glyph, Math.Max(1.15f, Px(1.15f)))
         {
-            double angle = Math.PI / 4 * i;
-            double cos = Math.Cos(angle);
-            double sin = Math.Sin(angle);
-            double tx = -sin;
-            double ty = cos;
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
 
-            PointF Root(float offset) => new(
-                (float)(cx + cos * root + tx * offset),
-                (float)(cy + sin * root + ty * offset));
-            PointF Tip(float offset) => new(
-                (float)(cx + cos * tip + tx * offset),
-                (float)(cy + sin * tip + ty * offset));
+        float ring = Px(4.5f);
+        g.DrawEllipse(ringPen, cx - ring, cy - ring, ring * 2, ring * 2);
 
-            path.AddPolygon(new[]
-            {
-                Root(-halfRoot),
-                Tip(-halfTip),
-                Tip(halfTip),
-                Root(halfRoot),
-            });
-        }
+        float hub = Px(1.7f);
+        g.DrawEllipse(ringPen, cx - hub, cy - hub, hub * 2, hub * 2);
 
-        path.AddEllipse(cx - root, cy - root, root * 2, root * 2);
-
-        using (var brush = new SolidBrush(glyph))
+        using var toothPen = new Pen(glyph, Math.Max(2f, Px(2.2f)))
         {
-            g.FillPath(brush, path);
-        }
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
 
-        float hole = Px(2.5f);
-        using (var brush = new SolidBrush(background))
+        for (int i = 0; i < 6; i++)
         {
-            g.FillEllipse(brush, cx - hole, cy - hole, hole * 2, hole * 2);
+            double angle = Math.PI / 3 * i;
+            float cos = (float)Math.Cos(angle);
+            float sin = (float)Math.Sin(angle);
+            g.DrawLine(
+                toothPen,
+                cx + cos * Px(5.1f),
+                cy + sin * Px(5.1f),
+                cx + cos * Px(7.3f),
+                cy + sin * Px(7.3f));
         }
     }
 

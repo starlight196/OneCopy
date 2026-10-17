@@ -17,6 +17,15 @@ static class Program
         Theme.SetDarkMode(settings.ResolveDark(DateTime.Now));
 
 #if DEBUG
+        // 开发调试：哈希算法自检（官方测试向量 + 流式/一次性交叉验证）
+        //   dotnet run -c Debug -- --hash-test 输出.log
+        if (args.Length >= 2 && args[0] == "--hash-test")
+        {
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+            Environment.ExitCode = HashSelfTest.RunConsole(Path.GetFullPath(args[1]));
+            return;
+        }
+
         // 开发调试：离屏渲染界面预览图，例如
         //   dotnet run -c Debug -- --preview 输出.png [populated|empty|dialog] [dark|light|system]
         if (args.Length >= 2 && args[0] == "--preview")
@@ -136,6 +145,15 @@ static class Program
             catch (Exception ex)
             {
                 lines.Add("dialog=fail " + ex.Message);
+            }
+
+            try
+            {
+                HashSelfTest.AppendTo(lines);
+            }
+            catch (Exception ex)
+            {
+                lines.Add("hashSelfTest=fail " + ex.Message);
             }
 
             try
@@ -450,6 +468,18 @@ static class Program
             $"countText={dialog.ExtensionsCountForTest.Replace("\r", "").Replace("\n", "")}");
         Shot(dialog, "settings-exclusions.png", "settingsExclusionsScreenshot");
 
+        // 扫描器页：算法选择、大文件夹提醒、并行数
+        dialog.ShowPageForTest(SettingsPage.Scanner);
+        Application.DoEvents();
+        lines.Add($"settingsPage scannerTitle={dialog.PageTitleForTest(SettingsPage.Scanner)}");
+        Shot(dialog, "settings-scanner.png", "settingsScannerScreenshot");
+        dialog.SelectAlgorithmForTest(HashAlgorithmKind.Blake3);
+        dialog.SetScannerForTest(warnLargeFolder: true, warnGb: 20, autoParallelism: false, parallelCount: 6);
+        Application.DoEvents();
+        lines.Add(
+            $"scannerSelection algorithm={dialog.AlgorithmForTest} " +
+            $"desc='{dialog.AlgorithmDescriptionForTest}'");
+
         dialog.ShowPageForTest(SettingsPage.Appearance);
         Application.DoEvents();
 
@@ -469,6 +499,10 @@ static class Program
             $"settingsSaveValid={saved} mode={dialog.Result.ThemeMode} " +
             $"range={dialog.Result.DarkStart}-{dialog.Result.DarkEnd} " +
             $"exts={string.Join(",", dialog.Result.ExcludedExtensions)}");
+        lines.Add(
+            $"settingsScannerSaved algorithm={dialog.Result.HashAlgorithm} " +
+            $"warn={dialog.Result.WarnLargeFolder} gb={dialog.Result.LargeFolderWarningGb} " +
+            $"autoParallel={dialog.Result.AutoParallelism} parallel={dialog.Result.MaxParallelism}");
 
         AppSettings probe = dialog.Result.Clone();
         lines.Add(
@@ -492,6 +526,9 @@ static class Program
         lines.Add(
             $"settingsPersist={persisted} loadedMode={loaded.ThemeMode} " +
             $"loadedExts={loaded.ExcludedExtensions.Count} loadedRange={loaded.DarkStart}-{loaded.DarkEnd}");
+        lines.Add(
+            $"scannerPersist algorithm={loaded.HashAlgorithm} warn={loaded.WarnLargeFolder} " +
+            $"gb={loaded.LargeFolderWarningGb} autoParallel={loaded.AutoParallelism} parallel={loaded.MaxParallelism}");
 
         // 应用设置会更新主题与排除集合
         form.ApplySettingsForTest(dialog.Result);
@@ -499,7 +536,8 @@ static class Program
         lines.Add(
             $"settingsApplied themeDark={Theme.DarkMode} " +
             $"expected={dialog.Result.ResolveDark(DateTime.Now)} " +
-            $"exts={form.ExcludedExtensionsForTest.Count}");
+            $"exts={form.ExcludedExtensionsForTest.Count} " +
+            $"algorithm={form.HashAlgorithmForTest} warnGb={form.LargeFolderWarningGbForTest}");
 
         // 外观实时预览：点击卡片立即换肤，不需要保存
         bool beforeDark = Theme.DarkMode;
@@ -613,7 +651,7 @@ static class Program
         }
         catch (Exception ex)
         {
-            lines.Add("exclusionScan=fail " + ex.Message);
+            lines.Add("exclusionScan=fail " + ex);
         }
         finally
         {

@@ -10,6 +10,7 @@ namespace OneCopy;
 internal enum NavIcon
 {
     Appearance,
+    Scanner,
     Exclusions,
     Update,
     About,
@@ -145,6 +146,40 @@ internal sealed class NavItem : PaintedControl
                 };
                 using var brush = new SolidBrush(color);
                 g.FillPolygon(brush, points);
+                break;
+            }
+
+            case NavIcon.Scanner:
+            {
+                // 芯片图标：圆角方块 + 四周引脚
+                using var pen = new Pen(color, Math.Max(1.2f, Px(1.2f)))
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round,
+                };
+                var chip = new RectangleF(
+                    rect.X + rect.Width * 0.26f,
+                    rect.Y + rect.Height * 0.26f,
+                    rect.Width * 0.48f,
+                    rect.Height * 0.48f);
+                using (GraphicsPath path = Theme.RoundedRect(chip, Px(2.5f)))
+                {
+                    g.DrawPath(pen, path);
+                }
+
+                float pinLength = rect.Width * 0.16f;
+                for (int i = 0; i < 3; i++)
+                {
+                    float offset = rect.Width * (0.36f + i * 0.14f);
+                    g.DrawLine(pen, rect.X + offset, chip.Top - pinLength, rect.X + offset, chip.Top);
+                    g.DrawLine(pen, rect.X + offset, chip.Bottom, rect.X + offset, chip.Bottom + pinLength);
+                }
+                for (int i = 0; i < 3; i++)
+                {
+                    float offset = rect.Height * (0.36f + i * 0.14f);
+                    g.DrawLine(pen, chip.Left - pinLength, rect.Y + offset, chip.Left, rect.Y + offset);
+                    g.DrawLine(pen, chip.Right, rect.Y + offset, chip.Right + pinLength, rect.Y + offset);
+                }
                 break;
             }
 
@@ -427,5 +462,167 @@ internal sealed class ThemePreviewCard : PaintedControl
             OnClick(EventArgs.Empty);
         }
         base.OnKeyDown(e);
+    }
+}
+
+/// <summary>设置页里的可选项按钮（药丸形），选中时强调色高亮。</summary>
+internal sealed class OptionChip : PaintedControl
+{
+    private bool _hover;
+    private bool _selected;
+
+    public bool Selected
+    {
+        get => _selected;
+        set
+        {
+            if (_selected == value) return;
+            _selected = value;
+            Invalidate();
+        }
+    }
+
+    public OptionChip()
+    {
+        Cursor = Cursors.Hand;
+        Height = 38;
+        TabStop = true;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var rect = new RectangleF(0.5f, 0.5f, Math.Max(0, Width - 1.5f), Math.Max(0, Height - 1.5f));
+        Color fill = _selected ? Theme.AccentSoft : _hover ? Theme.SurfaceHover : Theme.Surface;
+        Theme.FillRound(g, rect, Px(9), fill);
+        Theme.StrokeRound(
+            g,
+            rect,
+            Px(9),
+            _selected ? Theme.Accent : _hover ? Theme.BorderStrong : Theme.Border,
+            _selected ? Math.Max(1.6f, Px(1.5f)) : 1f);
+
+        TextRenderer.DrawText(
+            g,
+            Text,
+            _selected ? Theme.UIBold : Theme.UI,
+            new Rectangle(0, 0, Width, Height),
+            _selected ? Theme.Accent : Theme.TextPrimary,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hover = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hover = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        keyData is Keys.Space or Keys.Enter || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Space or Keys.Enter)
+        {
+            e.Handled = true;
+            OnClick(EventArgs.Empty);
+        }
+        base.OnKeyDown(e);
+    }
+}
+
+/// <summary>设置页里的开关控件。</summary>
+internal sealed class ToggleSwitch : PaintedControl
+{
+    private bool _hover;
+    private bool _checked;
+
+    public event EventHandler? CheckedChanged;
+
+    public bool Checked
+    {
+        get => _checked;
+        set
+        {
+            if (_checked == value) return;
+            _checked = value;
+            Invalidate();
+            CheckedChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public ToggleSwitch()
+    {
+        Size = new Size(46, 26);
+        Cursor = Cursors.Hand;
+        TabStop = true;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var track = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        Color trackColor = !Enabled ? Theme.DisabledFill
+            : _checked ? (_hover ? Theme.AccentHover : Theme.Accent)
+            : Theme.Track;
+        Theme.FillRound(g, track, track.Height / 2f, trackColor);
+
+        float knob = track.Height - Px(6);
+        float knobX = _checked ? track.Right - knob - Px(3) : track.Left + Px(3);
+        float knobY = track.Top + (track.Height - knob) / 2f;
+        using var brush = new SolidBrush(Enabled ? Color.White : Theme.DisabledText);
+        g.FillEllipse(brush, knobX, knobY, knob, knob);
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hover = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hover = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left && Enabled) Checked = !Checked;
+    }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        keyData is Keys.Space or Keys.Enter || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Space or Keys.Enter && Enabled)
+        {
+            e.Handled = true;
+            Checked = !Checked;
+        }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        Invalidate();
+        base.OnEnabledChanged(e);
     }
 }

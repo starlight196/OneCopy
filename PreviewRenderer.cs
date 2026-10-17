@@ -10,7 +10,7 @@ namespace OneCopy;
 /// <summary>
 /// 开发调试用的界面预览渲染器：把窗口显示在屏幕外，用 PrintWindow 截取真实渲染结果。
 /// 仅在 Debug 构建中可用。用法：
-///   dotnet run -c Debug -- --preview 输出.png [populated|empty|scanning|dialog|settings|settings-exclusions|settings-update|settings-about] [dark|light|system]
+///   dotnet run -c Debug -- --preview 输出.png [populated|empty|scanning|dialog|settings|settings-scanner|settings-exclusions|settings-update|settings-about] [dark|light|system]
 /// </summary>
 internal static class PreviewRenderer
 {
@@ -90,6 +90,7 @@ internal static class PreviewRenderer
 
         SettingsPage page = mode.ToLowerInvariant() switch
         {
+            "settings-scanner" => SettingsPage.Scanner,
             "settings-exclusions" => SettingsPage.Exclusions,
             "settings-update" => SettingsPage.Update,
             "settings-about" => SettingsPage.About,

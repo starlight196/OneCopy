@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
 
 namespace OneCopy;
 
@@ -29,11 +28,14 @@ public class ScanProgress
 /// </summary>
 public class FileScanner
 {
-    /// <summary>大文件读取缓冲区大小 (1 MB)</summary>
-    private const int HashBufferSize = 1_048_576;
-
     /// <summary>全局排除的扩展名集合（含前导点，大小写不敏感）。</summary>
     public HashSet<string> ExcludedExtensions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>计算文件哈希使用的算法（默认 SHA-256）。</summary>
+    public HashAlgorithmKind HashAlgorithm { get; set; } = HashAlgorithmKind.Sha256;
+
+    /// <summary>最大并行哈希文件数；0 表示按 CPU 逻辑核心数自动。</summary>
+    public int MaxDegreeOfParallelism { get; set; }
 
     /// <summary>暂停闸门：置位时扫描继续，Reset 时各工作线程在下一个检查点挂起。</summary>
     private readonly ManualResetEventSlim _pauseGate = new(initialState: true);
@@ -119,7 +121,9 @@ public class FileScanner
         var parallelOptions = new ParallelOptions
         {
             CancellationToken = cancellationToken,
-            MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount)
+            MaxDegreeOfParallelism = MaxDegreeOfParallelism > 0
+                ? Math.Min(MaxDegreeOfParallelism, 256)
+                : Math.Max(1, Environment.ProcessorCount),
         };
 
         // 并行处理每个大小组
@@ -141,7 +145,7 @@ public class FileScanner
                     string? hash = null;
                     try
                     {
-                        hash = ComputeSha256(fileInfo.FullName);
+                        hash = FileHasher.HashFile(fileInfo.FullName, HashAlgorithm);
                     }
                     catch (OperationCanceledException)
                     {
@@ -272,25 +276,6 @@ public class FileScanner
         catch (UnauthorizedAccessException) { }
         catch (PathTooLongException) { }
         catch (DirectoryNotFoundException) { }
-    }
-
-    /// <summary>
-    /// 使用流式读取 + SHA-256 计算文件哈希。
-    /// Windows 上 SHA256.Create() 会使用 CNG 硬件加速。
-    /// 使用 1MB 缓冲区减少大文件的 I/O 开销。
-    /// </summary>
-    private static string ComputeSha256(string filePath)
-    {
-        using var sha256 = SHA256.Create();
-        using var stream = new FileStream(
-            filePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: HashBufferSize,
-            options: FileOptions.SequentialScan); // 提示 OS 顺序读取
-        byte[] hash = sha256.ComputeHash(stream);
-        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     /// <summary>

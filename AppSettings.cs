@@ -49,6 +49,21 @@ internal sealed class AppSettings
     /// <summary>全局排除的扩展名（含前导点，例如 .tmp）。</summary>
     public List<string> ExcludedExtensions { get; set; } = new();
 
+    /// <summary>重复文件比对使用的哈希算法（默认 SHA-256）。</summary>
+    public HashAlgorithmKind HashAlgorithm { get; set; } = HashAlgorithmKind.Sha256;
+
+    /// <summary>扫描大文件夹前是否弹出提醒。</summary>
+    public bool WarnLargeFolder { get; set; } = true;
+
+    /// <summary>大文件夹提醒阈值（GB，默认 10）。</summary>
+    public int LargeFolderWarningGb { get; set; } = 10;
+
+    /// <summary>并行扫描时是否自动使用 CPU 逻辑核心数。</summary>
+    public bool AutoParallelism { get; set; } = true;
+
+    /// <summary>手动并行数（1-64）。</summary>
+    public int MaxParallelism { get; set; } = 4;
+
     /// <summary>测试用：覆盖设置文件路径；为空时使用 %AppData%\OneCopy\settings.json。</summary>
     internal static string? PathOverride { get; set; }
 
@@ -110,6 +125,11 @@ internal sealed class AppSettings
         DarkStart = DarkStart,
         DarkEnd = DarkEnd,
         ExcludedExtensions = new List<string>(ExcludedExtensions ?? new List<string>()),
+        HashAlgorithm = HashAlgorithm,
+        WarnLargeFolder = WarnLargeFolder,
+        LargeFolderWarningGb = LargeFolderWarningGb,
+        AutoParallelism = AutoParallelism,
+        MaxParallelism = MaxParallelism,
     };
 
     /// <summary>用另一份设置覆盖当前实例（保留对象引用，界面字段无须重新绑定）。</summary>
@@ -120,6 +140,11 @@ internal sealed class AppSettings
         DarkStart = other.DarkStart;
         DarkEnd = other.DarkEnd;
         ExcludedExtensions = new List<string>(other.ExcludedExtensions ?? new List<string>());
+        HashAlgorithm = other.HashAlgorithm;
+        WarnLargeFolder = other.WarnLargeFolder;
+        LargeFolderWarningGb = other.LargeFolderWarningGb;
+        AutoParallelism = other.AutoParallelism;
+        MaxParallelism = other.MaxParallelism;
     }
 
     // ===== 持久化 =====
@@ -171,6 +196,9 @@ internal sealed class AppSettings
     private void Sanitize()
     {
         if (!Enum.IsDefined(ThemeMode)) ThemeMode = ThemeMode.System;
+        if (!Enum.IsDefined(HashAlgorithm)) HashAlgorithm = HashAlgorithmKind.Sha256;
+        LargeFolderWarningGb = Math.Clamp(LargeFolderWarningGb, 1, 10000);
+        MaxParallelism = Math.Clamp(MaxParallelism, 1, 64);
         if (!TryParseTime(DarkStart, out _)) DarkStart = DefaultDarkStart;
         if (!TryParseTime(DarkEnd, out _)) DarkEnd = DefaultDarkEnd;
         DarkStart = FormatTime(GetDarkStart());

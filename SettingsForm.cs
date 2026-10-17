@@ -11,6 +11,7 @@ namespace OneCopy;
 internal enum SettingsPage
 {
     Appearance,
+    Scanner,
     Exclusions,
     Update,
     About,
@@ -18,7 +19,7 @@ internal enum SettingsPage
 
 /// <summary>
 /// 设置窗口：左侧导航 + 右侧内容区。
-/// 页面：外观（浅色 / 深色 / 跟随系统 / 自定义时间）、全局排除扩展名、检查更新、关于。
+/// 页面：外观、扫描器（哈希算法 / 大文件夹提醒 / 并行数）、全局排除扩展名、检查更新、关于。
 /// </summary>
 internal sealed class SettingsForm : ChromeForm
 {
@@ -26,6 +27,7 @@ internal sealed class SettingsForm : ChromeForm
     private readonly List<NavItem> _navItems = new();
     private readonly Dictionary<SettingsPage, Panel> _pages = new();
     private readonly List<ThemePreviewCard> _themeCards = new();
+    private readonly List<OptionChip> _algorithmChips = new();
 
     private AppLogo _logo = null!;
     private Label _appName = null!;
@@ -42,6 +44,13 @@ internal sealed class SettingsForm : ChromeForm
     private TimeField _darkEnd = null!;
     private MultilineInput _extensions = null!;
     private Label _extensionsCount = null!;
+
+    private HashAlgorithmKind _algorithm;
+    private Label _algorithmDescription = null!;
+    private ToggleSwitch _warnToggle = null!;
+    private NumberField _warnGb = null!;
+    private ToggleSwitch _autoParallelToggle = null!;
+    private NumberField _parallelCount = null!;
 
     private Label _updateCurrent = null!;
     private Label _updateStatus = null!;
@@ -64,6 +73,7 @@ internal sealed class SettingsForm : ChromeForm
     {
         _result = settings.Clone();
         _mode = _result.ThemeMode;
+        _algorithm = _result.HashAlgorithm;
 
         Text = "设置";
         StartPosition = FormStartPosition.CenterParent;
@@ -148,6 +158,7 @@ internal sealed class SettingsForm : ChromeForm
 
         // 所有页面一次性创建，切换时只改变可见性
         _pages[SettingsPage.Appearance] = BuildAppearancePage();
+        _pages[SettingsPage.Scanner] = BuildScannerPage();
         _pages[SettingsPage.Exclusions] = BuildExclusionsPage();
         _pages[SettingsPage.Update] = BuildUpdatePage();
         _pages[SettingsPage.About] = BuildAboutPage();
@@ -194,8 +205,12 @@ internal sealed class SettingsForm : ChromeForm
         _sidebar.Controls.Add(_appName);
         _sidebar.Controls.Add(_appSubtitle);
 
-        string[] labels = { "外观", "排除扩展名", "检查更新", "关于" };
-        NavIcon[] icons = { NavIcon.Appearance, NavIcon.Exclusions, NavIcon.Update, NavIcon.About };
+        string[] labels = { "外观", "扫描器", "排除扩展名", "检查更新", "关于" };
+        NavIcon[] icons =
+        {
+            NavIcon.Appearance, NavIcon.Scanner, NavIcon.Exclusions, NavIcon.Update, NavIcon.About,
+        };
+        _navItems.Clear();
         for (int i = 0; i < labels.Length; i++)
         {
             var page = (SettingsPage)i;
@@ -347,6 +362,7 @@ internal sealed class SettingsForm : ChromeForm
         int cardWidth = Px(126);
         int cardHeight = Px(118);
         int gap = Px(16);
+        _themeCards.Clear();
         for (int i = 0; i < modes.Length; i++)
         {
             ThemeMode mode = modes[i];
@@ -399,6 +415,146 @@ internal sealed class SettingsForm : ChromeForm
         page.Controls.Add(saveHint);
 
         return page;
+    }
+
+    private static Label CreateSectionLabel(string text) => new()
+    {
+        AutoSize = false,
+        Text = text,
+        Font = Theme.UIBold,
+        ForeColor = Theme.TextPrimary,
+        BackColor = Theme.Background,
+        TextAlign = ContentAlignment.MiddleLeft,
+    };
+
+    private Panel BuildScannerPage()
+    {
+        Panel page = CreatePage();
+        int width = Px(642);
+
+        Label title = CreateTitle("扫描器");
+        title.Bounds = new Rectangle(0, 0, width, Px(34));
+        page.Controls.Add(title);
+
+        Label hint = CreateHint("选择重复文件比对使用的哈希算法，以及扫描时的提醒与并行设置。");
+        hint.Bounds = new Rectangle(0, Px(36), width, Px(22));
+        page.Controls.Add(hint);
+
+        // ===== 哈希算法 =====
+        Label algorithmLabel = CreateSectionLabel("哈希算法");
+        algorithmLabel.Bounds = new Rectangle(0, Px(68), width, Px(24));
+        page.Controls.Add(algorithmLabel);
+
+        int chipWidth = Px(168);
+        int chipGap = Px(12);
+        _algorithmChips.Clear();
+        for (int i = 0; i < HashAlgorithmInfo.All.Length; i++)
+        {
+            HashAlgorithmKind kind = HashAlgorithmInfo.All[i];
+            var chip = new OptionChip
+            {
+                Text = HashAlgorithmInfo.DisplayName(kind),
+                Bounds = new Rectangle(i * (chipWidth + chipGap), Px(98), chipWidth, Px(38)),
+            };
+            chip.Click += (_, _) => SelectAlgorithm(kind);
+            _algorithmChips.Add(chip);
+            page.Controls.Add(chip);
+        }
+
+        _algorithmDescription = CreateHint(string.Empty);
+        _algorithmDescription.Bounds = new Rectangle(0, Px(146), width, Px(22));
+        page.Controls.Add(_algorithmDescription);
+
+        Label algorithmHint = CreateHint("同一批扫描内所有文件使用同一种算法；文件夹越大，建议选择更快的算法。");
+        algorithmHint.Bounds = new Rectangle(0, Px(172), width, Px(20));
+        page.Controls.Add(algorithmHint);
+
+        // ===== 大文件夹提醒 =====
+        Label warningLabel = CreateSectionLabel("大文件夹提醒");
+        warningLabel.Bounds = new Rectangle(0, Px(210), width, Px(24));
+        page.Controls.Add(warningLabel);
+
+        _warnToggle = new ToggleSwitch { Bounds = new Rectangle(0, Px(240), Px(46), Px(26)) };
+        _warnToggle.Checked = _result.WarnLargeFolder;
+        _warnToggle.CheckedChanged += (_, _) => UpdateScannerDimmed();
+        page.Controls.Add(_warnToggle);
+
+        Label warnText = CreateBody("超过阈值时弹窗提醒");
+        warnText.Bounds = new Rectangle(Px(60), Px(238), Px(250), Px(30));
+        page.Controls.Add(warnText);
+
+        _warnGb = new NumberField
+        {
+            Bounds = new Rectangle(Px(330), Px(236), Px(120), Px(34)),
+            Minimum = 1,
+            Maximum = 10000,
+            Value = _result.LargeFolderWarningGb,
+        };
+        page.Controls.Add(_warnGb);
+
+        Label gbUnit = CreateBody("GB");
+        gbUnit.Bounds = new Rectangle(Px(458), Px(236), Px(40), Px(34));
+        page.Controls.Add(gbUnit);
+
+        Label warnHint = CreateHint("默认 10 GB；关闭开关后扫描前不再提示。");
+        warnHint.Bounds = new Rectangle(0, Px(282), width, Px(20));
+        page.Controls.Add(warnHint);
+
+        // ===== 并行扫描文件数 =====
+        Label parallelLabel = CreateSectionLabel("并行扫描文件数");
+        parallelLabel.Bounds = new Rectangle(0, Px(318), width, Px(24));
+        page.Controls.Add(parallelLabel);
+
+        _autoParallelToggle = new ToggleSwitch { Bounds = new Rectangle(0, Px(348), Px(46), Px(26)) };
+        _autoParallelToggle.Checked = _result.AutoParallelism;
+        _autoParallelToggle.CheckedChanged += (_, _) => UpdateScannerDimmed();
+        page.Controls.Add(_autoParallelToggle);
+
+        Label autoText = CreateBody($"自动（CPU 逻辑核心数 {Environment.ProcessorCount}）");
+        autoText.Bounds = new Rectangle(Px(60), Px(346), Px(340), Px(30));
+        page.Controls.Add(autoText);
+
+        _parallelCount = new NumberField
+        {
+            Bounds = new Rectangle(Px(430), Px(344), Px(120), Px(34)),
+            Minimum = 1,
+            Maximum = 64,
+            Value = _result.MaxParallelism,
+        };
+        page.Controls.Add(_parallelCount);
+
+        Label countUnit = CreateBody("个");
+        countUnit.Bounds = new Rectangle(Px(558), Px(344), Px(40), Px(34));
+        page.Controls.Add(countUnit);
+
+        Label parallelHint = CreateHint("自动模式会使用当前 CPU 逻辑核心数；手动可设置 1-64。");
+        parallelHint.Bounds = new Rectangle(0, Px(390), width, Px(20));
+        page.Controls.Add(parallelHint);
+
+        SelectAlgorithm(_algorithm);
+        UpdateScannerDimmed();
+        return page;
+    }
+
+    private void SelectAlgorithm(HashAlgorithmKind kind)
+    {
+        _algorithm = kind;
+        for (int i = 0; i < _algorithmChips.Count; i++)
+        {
+            _algorithmChips[i].Selected = HashAlgorithmInfo.All[i] == kind;
+        }
+
+        if (_algorithmDescription is not null)
+        {
+            _algorithmDescription.Text =
+                $"当前：{HashAlgorithmInfo.DisplayName(kind)} —— {HashAlgorithmInfo.Description(kind)}";
+        }
+    }
+
+    private void UpdateScannerDimmed()
+    {
+        if (_warnGb is not null) _warnGb.Dimmed = !_warnToggle.Checked;
+        if (_parallelCount is not null) _parallelCount.Dimmed = _autoParallelToggle.Checked;
     }
 
     private Panel BuildExclusionsPage()
@@ -518,7 +674,7 @@ internal sealed class SettingsForm : ChromeForm
         Label description = new()
         {
             AutoSize = false,
-            Text = "OneCopy 是一个 Windows 原生重复文件清理工具：先按文件大小预筛选，再并行计算 SHA-256，找出内容完全相同的文件。",
+            Text = "OneCopy 是一个 Windows 原生重复文件清理工具：先按文件大小预筛选，再并行计算哈希（SHA-256 / XXH3-128 / BLAKE3），找出内容完全相同的文件。",
             Font = Theme.Small,
             ForeColor = Theme.TextSecondary,
             BackColor = Theme.Background,
@@ -632,6 +788,11 @@ internal sealed class SettingsForm : ChromeForm
             string statusText = _statusLabel.Text;
             string updateStatusText = _updateStatus.Text;
             SettingsPage page = _page;
+            HashAlgorithmKind algorithm = _algorithm;
+            bool warnLargeFolder = _warnToggle.Checked;
+            int warnGb = _warnGb.Value;
+            bool autoParallelism = _autoParallelToggle.Checked;
+            int parallelCount = _parallelCount.Value;
 
             SuspendLayout();
             for (int i = Controls.Count - 1; i >= 0; i--)
@@ -648,6 +809,12 @@ internal sealed class SettingsForm : ChromeForm
             _extensions.Text = extensionsText;
             _statusLabel.Text = statusText;
             _updateStatus.Text = updateStatusText;
+            SelectAlgorithm(algorithm);
+            _warnToggle.Checked = warnLargeFolder;
+            _warnGb.Value = warnGb;
+            _autoParallelToggle.Checked = autoParallelism;
+            _parallelCount.Value = parallelCount;
+            UpdateScannerDimmed();
             SelectPage(page);
             WindowChrome.Apply(this);
         }
@@ -701,9 +868,17 @@ internal sealed class SettingsForm : ChromeForm
             return false;
         }
 
+        _warnGb.TryCommit();
+        _parallelCount.TryCommit();
+
         _result.ThemeMode = _mode;
         _result.SetDarkRange(start, end);
         _result.ExcludedExtensions = extensions;
+        _result.HashAlgorithm = _algorithm;
+        _result.WarnLargeFolder = _warnToggle.Checked;
+        _result.LargeFolderWarningGb = _warnGb.Value;
+        _result.AutoParallelism = _autoParallelToggle.Checked;
+        _result.MaxParallelism = _parallelCount.Value;
         return true;
     }
 
@@ -794,6 +969,23 @@ internal sealed class SettingsForm : ChromeForm
     }
 
     internal void SelectModeForTest(ThemeMode mode) => SelectMode(mode);
+
+    /// <summary>自检用：选中哈希算法。</summary>
+    internal void SelectAlgorithmForTest(HashAlgorithmKind kind) => SelectAlgorithm(kind);
+
+    /// <summary>自检用：设置扫描器页的提醒与并行参数。</summary>
+    internal void SetScannerForTest(bool warnLargeFolder, int warnGb, bool autoParallelism, int parallelCount)
+    {
+        _warnToggle.Checked = warnLargeFolder;
+        _warnGb.Value = warnGb;
+        _autoParallelToggle.Checked = autoParallelism;
+        _parallelCount.Value = parallelCount;
+        UpdateScannerDimmed();
+    }
+
+    internal string AlgorithmDescriptionForTest => _algorithmDescription.Text;
+
+    internal HashAlgorithmKind AlgorithmForTest => _algorithm;
 
     /// <summary>模拟点击外观卡片（含主题实时预览）。</summary>
     internal void SelectModeWithPreviewForTest(ThemeMode mode)

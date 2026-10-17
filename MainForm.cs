@@ -529,6 +529,25 @@ public sealed class MainForm : ChromeForm
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+
+            // 大文件夹提醒（可在设置 → 扫描器中调整阈值或关闭）
+            if (_settings.WarnLargeFolder)
+            {
+                long thresholdBytes = (long)_settings.LargeFolderWarningGb * 1024 * 1024 * 1024;
+                if (summary.TotalSize > thresholdBytes)
+                {
+                    DialogResult go = MessageBox.Show(
+                        this,
+                        $"该文件夹共 {summary.TotalSizeDisplay}（{summary.TotalFiles:n0} 个文件），" +
+                        $"超过提醒阈值 {_settings.LargeFolderWarningGb} GB。\n\n扫描可能需要较长时间，是否继续？",
+                        "文件夹较大",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button1);
+                    if (go != DialogResult.Yes) return;
+                }
+            }
+
             if (!Confirm(summary, path)) return;
             await DoScanAsync(path);
         }
@@ -617,9 +636,14 @@ public sealed class MainForm : ChromeForm
             TextAlign = ContentAlignment.MiddleLeft,
         }, 0, 0);
 
-        string exclusionNote = _excludedExtensions.Count > 0
-            ? $"\n已全局排除 {_excludedExtensions.Count} 种扩展名（可在设置中修改）"
-            : string.Empty;
+        string scanInfo =
+            $"算法 {HashAlgorithmInfo.DisplayName(_settings.HashAlgorithm)} · " +
+            $"并行 {(_settings.AutoParallelism ? Environment.ProcessorCount : _settings.MaxParallelism)}";
+        if (_excludedExtensions.Count > 0)
+        {
+            scanInfo += $" · 已排除 {_excludedExtensions.Count} 种扩展名";
+        }
+        scanInfo += "（可在设置 → 扫描器中修改）";
 
         root.Controls.Add(new Label
         {
@@ -628,7 +652,7 @@ public sealed class MainForm : ChromeForm
             ForeColor = Theme.TextSecondary,
             BackColor = Theme.Background,
             TextAlign = ContentAlignment.MiddleLeft,
-            Text = $"文件夹：{folder}\n共 {summary.TotalFiles:n0} 个文件 · 总大小 {summary.TotalSizeDisplay}（按扩展名统计如下）{exclusionNote}",
+            Text = $"文件夹：{folder}\n共 {summary.TotalFiles:n0} 个文件 · 总大小 {summary.TotalSizeDisplay}（按扩展名统计如下）\n{scanInfo}",
         }, 0, 1);
 
         var card = new CardPanel
@@ -688,7 +712,12 @@ public sealed class MainForm : ChromeForm
         try
         {
             var progress = new Progress<ScanProgress>(OnScanProgress);
-            _scanner = new FileScanner { ExcludedExtensions = _excludedExtensions };
+            _scanner = new FileScanner
+            {
+                ExcludedExtensions = _excludedExtensions,
+                HashAlgorithm = _settings.HashAlgorithm,
+                MaxDegreeOfParallelism = _settings.AutoParallelism ? 0 : _settings.MaxParallelism,
+            };
             _allGroups = await _scanner.ScanAsync(path, progress, token);
 
             _list.SetGroups(_allGroups);
@@ -780,7 +809,7 @@ public sealed class MainForm : ChromeForm
                 int percent = info.TotalFiles > 0
                     ? (int)(info.ProcessedFiles * 100L / info.TotalFiles)
                     : 100;
-                _lblProgress.Text = $"正在计算 SHA-256 · {info.ProcessedFiles:n0} / {info.TotalFiles:n0} · {percent}%";
+                _lblProgress.Text = $"正在计算 {HashAlgorithmInfo.DisplayName(_settings.HashAlgorithm)} · {info.ProcessedFiles:n0} / {info.TotalFiles:n0} · {percent}%";
                 break;
 
             default:
@@ -1045,6 +1074,12 @@ public sealed class MainForm : ChromeForm
 
     internal HashSet<string> ExcludedExtensionsForTest => _excludedExtensions;
 
+    internal HashAlgorithmKind HashAlgorithmForTest => _settings.HashAlgorithm;
+
+    internal bool WarnLargeFolderForTest => _settings.WarnLargeFolder;
+
+    internal int LargeFolderWarningGbForTest => _settings.LargeFolderWarningGb;
+
     /// <summary>预览 / 自检用：把界面切到"正在扫描"状态，检查暂停与停止按钮。</summary>
     internal void ApplyScanningPreviewForTest()
     {
@@ -1059,7 +1094,7 @@ public sealed class MainForm : ChromeForm
         _progress.Indeterminate = false;
         _progress.Maximum = 2048;
         _progress.Value = 1284;
-        _lblProgress.Text = "正在计算 SHA-256 · 1,284 / 2,048 · 62%";
+        _lblProgress.Text = $"正在计算 {HashAlgorithmInfo.DisplayName(_settings.HashAlgorithm)} · 1,284 / 2,048 · 62%";
         UpdateActionAvailability();
         LayoutProgressRow();
     }
