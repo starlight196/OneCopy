@@ -1,0 +1,414 @@
+// OneCopy — 重复文件清理工具
+// Copyright (C) 2026 starlight196
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+using System.Drawing.Drawing2D;
+
+namespace OneCopy;
+
+/// <summary>标题栏按钮类型。</summary>
+internal enum CaptionKind
+{
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+    Theme,
+}
+
+/// <summary>窗口圆角 / 深色边框等 DWM 效果。</summary>
+internal static class WindowChrome
+{
+    public static void Apply(Form form)
+    {
+        if (!form.IsHandleCreated) return;
+        try
+        {
+            int round = NativeMethods.DWMWCP_ROUND;
+            NativeMethods.DwmSetWindowAttribute(
+                form.Handle, NativeMethods.DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
+
+            int dark = Theme.DarkMode ? 1 : 0;
+            NativeMethods.DwmSetWindowAttribute(
+                form.Handle, NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
+        }
+        catch
+        {
+            // 老系统不支持这些 DWM 属性时忽略
+        }
+    }
+}
+
+/// <summary>自绘的窗口标题栏：应用标志、标题、主题切换与窗口控制按钮，支持拖动与双击最大化。</summary>
+internal sealed class TitleBar : PaintedControl
+{
+    private readonly Form _form;
+    private readonly CaptionButton _minimize;
+    private readonly CaptionButton _maximize;
+    private readonly CaptionButton _close;
+    private readonly CaptionButton _themeToggle;
+    private readonly ToolTip _toolTip;
+    private bool _showMinimize = true;
+    private bool _showMaximize = true;
+    private bool _showThemeToggle = true;
+    private bool _showVersion = true;
+    private readonly string _versionText = BuildVersionText();
+
+    private static string BuildVersionText()
+    {
+        string version = (Application.ProductVersion ?? string.Empty).Trim();
+        // 去掉可能的 "+提交哈希" 后缀
+        int plus = version.IndexOf('+');
+        if (plus >= 0) version = version[..plus];
+        return string.IsNullOrEmpty(version) ? string.Empty : "v" + version;
+    }
+
+    public event EventHandler? ThemeToggleRequested;
+
+    public bool ShowMinimize
+    {
+        get => _showMinimize;
+        set
+        {
+            _showMinimize = value;
+            _minimize.Visible = value;
+            PerformLayout();
+        }
+    }
+
+    public bool ShowMaximize
+    {
+        get => _showMaximize;
+        set
+        {
+            _showMaximize = value;
+            _maximize.Visible = value;
+            PerformLayout();
+        }
+    }
+
+    public bool ShowThemeToggle
+    {
+        get => _showThemeToggle;
+        set
+        {
+            _showThemeToggle = value;
+            _themeToggle.Visible = value;
+            PerformLayout();
+        }
+    }
+
+    /// <summary>是否在标题后显示版本号。</summary>
+    public bool ShowVersion
+    {
+        get => _showVersion;
+        set
+        {
+            _showVersion = value;
+            Invalidate();
+        }
+    }
+
+    public TitleBar(Form form)
+    {
+        _form = form;
+        _toolTip = new ToolTip { InitialDelay = 400, ReshowDelay = 200 };
+
+        _themeToggle = new CaptionButton(CaptionKind.Theme);
+        _minimize = new CaptionButton(CaptionKind.Minimize);
+        _maximize = new CaptionButton(CaptionKind.Maximize);
+        _close = new CaptionButton(CaptionKind.Close);
+        Controls.AddRange(new Control[] { _themeToggle, _minimize, _maximize, _close });
+
+        _toolTip.SetToolTip(_themeToggle, "切换深色 / 浅色主题");
+        _toolTip.SetToolTip(_minimize, "最小化");
+        _toolTip.SetToolTip(_maximize, "最大化 / 还原");
+        _toolTip.SetToolTip(_close, "关闭");
+
+        _themeToggle.Click += (_, _) => ThemeToggleRequested?.Invoke(this, EventArgs.Empty);
+        _minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
+        _maximize.Click += (_, _) => ToggleMaximize();
+        _close.Click += (_, _) => _form.Close();
+    }
+
+    /// <summary>同步最大化状态对应的按钮图标。</summary>
+    public void SetMaximized(bool maximized)
+    {
+        CaptionKind kind = maximized ? CaptionKind.Restore : CaptionKind.Maximize;
+        if (_maximize.Kind == kind) return;
+        _maximize.Kind = kind;
+        _maximize.Invalidate();
+    }
+
+    private void ToggleMaximize()
+    {
+        if (!_showMaximize) return;
+        _form.WindowState = _form.WindowState == FormWindowState.Maximized
+            ? FormWindowState.Normal
+            : FormWindowState.Maximized;
+    }
+
+    protected override Color PaintBackColor => Theme.Surface;
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+
+        int buttonWidth = Px(44);
+        int buttonHeight = Px(30);
+        int gap = Px(2);
+        int top = (Height - Px(1) - buttonHeight) / 2;
+        int x = Width - Px(8);
+
+        void Place(CaptionButton button)
+        {
+            x -= buttonWidth;
+            button.Bounds = new Rectangle(x, top, buttonWidth, buttonHeight);
+            x -= gap;
+        }
+
+        Place(_close);
+        if (_showMaximize) Place(_maximize);
+        if (_showMinimize) Place(_minimize);
+
+        if (_showThemeToggle)
+        {
+            x -= Px(6);
+            x -= Px(38);
+            _themeToggle.Bounds = new Rectangle(x, top, Px(38), buttonHeight);
+        }
+        else
+        {
+            _themeToggle.Bounds = Rectangle.Empty;
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(Theme.Surface);
+
+        using (var border = new Pen(Theme.Border))
+        {
+            g.DrawLine(border, 0, Height - 1, Width, Height - 1);
+        }
+
+        // 应用标志
+        float logoSize = Px(22);
+        var logo = new RectangleF(Px(16), (Height - Px(1) - logoSize) / 2f, logoSize, logoSize);
+        Theme.FillRound(g, logo, Px(6), Theme.Accent);
+        var folder = new RectangleF(
+            logo.X + Px(4.5f),
+            logo.Y + Px(6f),
+            logo.Width - Px(9f),
+            logo.Height - Px(10.5f));
+        Theme.DrawFolderIcon(g, folder, Color.White);
+
+        // 标题
+        int titleLeft = Px(48);
+        int titleRight = (_showThemeToggle ? _themeToggle.Left : _close.Left) - Px(12);
+        var titleRect = new Rectangle(titleLeft, 0, Math.Max(0, titleRight - titleLeft), Height - 1);
+        TextRenderer.DrawText(
+            g,
+            _form.Text,
+            Theme.TitleBarFont,
+            titleRect,
+            Theme.TextPrimary,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+
+        // 版本号（跟随标题右侧，弱化显示）
+        if (_showVersion && !string.IsNullOrWhiteSpace(_versionText) && _versionText != "v")
+        {
+            Size titleSize = TextRenderer.MeasureText(
+                g,
+                _form.Text,
+                Theme.TitleBarFont,
+                new Size(int.MaxValue, int.MaxValue),
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            int versionLeft = titleLeft + titleSize.Width + Px(10);
+            int versionRight = titleRight;
+            if (versionRight > versionLeft)
+            {
+                var versionRect = new Rectangle(versionLeft, 0, versionRight - versionLeft, Height - 1);
+                TextRenderer.DrawText(
+                    g,
+                    _versionText,
+                    Theme.Small,
+                    versionRect,
+                    Theme.TextMuted,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            }
+        }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left) return;
+
+        if (e.Clicks >= 2)
+        {
+            ToggleMaximize();
+            return;
+        }
+
+        NativeMethods.ReleaseCapture();
+        NativeMethods.SendMessage(
+            _form.Handle,
+            NativeMethods.WM_NCLBUTTONDOWN,
+            (IntPtr)NativeMethods.HTCAPTION,
+            IntPtr.Zero);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _toolTip.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+}
+
+/// <summary>标题栏上的图标按钮（最小化 / 最大化 / 关闭 / 主题切换）。</summary>
+internal sealed class CaptionButton : PaintedControl
+{
+    private bool _hover;
+    private bool _pressed;
+
+    public CaptionKind Kind { get; set; }
+
+    public CaptionButton(CaptionKind kind)
+    {
+        Kind = kind;
+        BackColor = Color.Transparent;
+        Cursor = Cursors.Hand;
+        TabStop = false;
+        SetStyle(ControlStyles.Selectable, false);
+    }
+
+    protected override Color PaintBackColor => Theme.Surface;
+
+    /// <summary>模拟点击（供自检/自动化使用）。</summary>
+    public void PerformClick() => OnClick(EventArgs.Empty);
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        bool close = Kind == CaptionKind.Close;
+        bool highlight = _hover || _pressed;
+
+        if (highlight)
+        {
+            Color background = close
+                ? (_pressed ? Theme.DangerDown : Theme.DangerHover)
+                : (_pressed ? Theme.CaptionPressed : Theme.CaptionHover);
+            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Px(7), background);
+        }
+
+        Color glyph = close && highlight ? Color.White : Theme.TextSecondary;
+        using var pen = new Pen(glyph, Math.Max(1.2f, Px(1.15f)))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
+
+        float cx = Width / 2f;
+        float cy = Height / 2f;
+
+        switch (Kind)
+        {
+            case CaptionKind.Minimize:
+                g.DrawLine(pen, cx - Px(5), cy, cx + Px(5), cy);
+                break;
+
+            case CaptionKind.Maximize:
+                g.DrawRectangle(pen, cx - Px(5.5f), cy - Px(5.5f), Px(11), Px(11));
+                break;
+
+            case CaptionKind.Restore:
+                g.DrawRectangle(pen, cx - Px(6), cy - Px(4.5f), Px(9f), Px(8.5f));
+                g.DrawLine(pen, cx - Px(3), cy - Px(4.5f), cx - Px(3), cy + Px(2.5f));
+                break;
+
+            case CaptionKind.Close:
+                g.DrawLine(pen, cx - Px(5), cy - Px(5), cx + Px(5), cy + Px(5));
+                g.DrawLine(pen, cx + Px(5), cy - Px(5), cx - Px(5), cy + Px(5));
+                break;
+
+            case CaptionKind.Theme:
+                DrawThemeGlyph(g, pen, cx, cy, highlight);
+                break;
+        }
+    }
+
+    private void DrawThemeGlyph(Graphics g, Pen pen, float cx, float cy, bool highlight)
+    {
+        float radius = Px(5);
+
+        if (Theme.DarkMode)
+        {
+            // 深色模式显示太阳（点击切到浅色）
+            g.DrawEllipse(pen, cx - radius, cy - radius, radius * 2, radius * 2);
+            for (int i = 0; i < 8; i++)
+            {
+                double angle = Math.PI / 4 * i;
+                float x1 = cx + (float)Math.Cos(angle) * Px(7.5f);
+                float y1 = cy + (float)Math.Sin(angle) * Px(7.5f);
+                float x2 = cx + (float)Math.Cos(angle) * Px(9.5f);
+                float y2 = cy + (float)Math.Sin(angle) * Px(9.5f);
+                g.DrawLine(pen, x1, y1, x2, y2);
+            }
+        }
+        else
+        {
+            // 浅色模式显示月亮（点击切到深色）
+            Color background = highlight ? Theme.CaptionHover : Theme.Surface;
+            using (var brush = new SolidBrush(Theme.TextSecondary))
+            {
+                g.FillEllipse(brush, cx - radius, cy - radius, radius * 2, radius * 2);
+            }
+            using (var brush = new SolidBrush(background))
+            {
+                g.FillEllipse(brush, cx - radius + Px(3.2f), cy - radius - Px(1.6f), radius * 2, radius * 2);
+            }
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hover = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hover = false;
+        _pressed = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            _pressed = true;
+            Invalidate();
+        }
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        _pressed = false;
+        Invalidate();
+        base.OnMouseUp(e);
+    }
+}

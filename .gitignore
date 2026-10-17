@@ -1,0 +1,22 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.pdb
+*.log
+*.vs/
+.vscode/
+
+# Build output
+publish/
+
+# 本地打包的发布产物
+OneCopy-v*/
+OneCopy-v*.zip
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
