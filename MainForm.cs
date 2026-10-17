@@ -2,11 +2,9 @@
 // Copyright (C) 2026 starlight196
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-using System.Runtime.InteropServices;
-
 namespace OneCopy;
 
-public sealed class MainForm : Form
+public sealed class MainForm : ChromeForm
 {
     private enum KeepMode { First, Newest, SelectAll, DeselectAll }
 
@@ -19,10 +17,16 @@ public sealed class MainForm : Form
 
     private List<DuplicateGroup> _allGroups = new();
     private CancellationTokenSource? _scanCts;
+    private FileScanner? _scanner;
     private bool _isScanning;
+    private bool _isPaused;
     private bool _summarizing;
     private bool _closing;
     private float _scale = 1f;
+
+    private readonly AppSettings _settings;
+    private HashSet<string> _excludedExtensions;
+    private readonly System.Windows.Forms.Timer _appearanceTimer;
 
     private TitleBar _titleBar = null!;
     private ModernButton _btnSelectFolder = null!;
@@ -30,7 +34,8 @@ public sealed class MainForm : Form
     private DuplicateListView _list = null!;
     private ModernProgressBar _progress = null!;
     private Label _lblProgress = null!;
-    private ModernButton _btnCancel = null!;
+    private ModernButton _btnPause = null!;
+    private ModernButton _btnStop = null!;
     private ModernButton _btnKeepFirst = null!;
     private ModernButton _btnKeepNewest = null!;
     private ModernButton _btnCheckAll = null!;
@@ -42,17 +47,19 @@ public sealed class MainForm : Form
 
     private int Px(float value) => (int)Math.Round(value * _scale);
 
-    public MainForm()
+    public MainForm() : this(AppSettings.Load())
     {
+    }
+
+    internal MainForm(AppSettings settings)
+    {
+        _settings = settings;
+        _excludedExtensions = settings.BuildExcludedSet();
+
         Text = "OneCopy 重复文件清理工具";
-        FormBorderStyle = FormBorderStyle.None;
         BackColor = Theme.Background;
-        Font = Theme.UI;
-        AutoScaleMode = AutoScaleMode.None; // 所有尺寸由 Px() 手动按 DPI 缩放
-        DoubleBuffered = true;
         KeyPreview = true;
         StartPosition = FormStartPosition.CenterScreen;
-        Icon = Theme.AppIcon;
 
         _ = Handle; // 提前创建句柄，取得当前显示器的真实 DPI
         _scale = DeviceDpi / 96f;
@@ -63,80 +70,17 @@ public sealed class MainForm : Form
         ResumeLayout(performLayout: true);
 
         BindFormEvents();
+
+        // 跟随系统 / 自定义时间模式下定时检查是否需要换肤
+        _appearanceTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
+        _appearanceTimer.Tick += (_, _) => RefreshAppearanceIfNeeded();
+        _appearanceTimer.Start();
     }
 
     // ===================== 无边框窗口 =====================
 
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            // WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
-            // 保留系统提供的可调整大小边框、阴影与贴边分屏，标题栏由我们自绘（通过 WM_NCCALCSIZE 去掉）。
-            cp.Style |= 0x00C00000 | 0x00040000 | 0x00080000 | 0x00020000 | 0x00010000;
-            cp.ClassStyle |= 0x00020000; // CS_DROPSHADOW
-            return cp;
-        }
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        WindowChrome.Apply(this);
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == NativeMethods.WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
-        {
-            // 去掉系统标题栏：客户区直接铺满整个窗口
-            if (NativeMethods.IsZoomed(Handle))
-            {
-                // 最大化时系统会让窗口向屏幕外延伸一圈可调整边框，这里把客户区对齐到工作区
-                Rectangle workingArea = Screen.FromHandle(Handle).WorkingArea;
-                var rect = Marshal.PtrToStructure<NativeMethods.RECT>(m.LParam);
-                rect.Left = workingArea.Left;
-                rect.Top = workingArea.Top;
-                rect.Right = workingArea.Right;
-                rect.Bottom = workingArea.Bottom;
-                Marshal.StructureToPtr(rect, m.LParam, false);
-            }
-
-            m.Result = IntPtr.Zero;
-            return;
-        }
-
-        if (m.Msg == NativeMethods.WM_NCHITTEST)
-        {
-            base.WndProc(ref m);
-            if ((int)m.Result == NativeMethods.HTCLIENT
-                && WindowState == FormWindowState.Normal)
-            {
-                // 客户区铺满窗口后系统不再提供缩放边框，这里自行判断边缘
-                int lParam = m.LParam.ToInt32();
-                var screenPoint = new Point((short)(lParam & 0xFFFF), (short)((lParam >> 16) & 0xFFFF));
-                Point client = PointToClient(screenPoint);
-                int border = Math.Max(6, Px(5));
-                bool left = client.X < border;
-                bool right = client.X >= ClientSize.Width - border;
-                bool top = client.Y < border;
-                bool bottom = client.Y >= ClientSize.Height - border;
-
-                if (left && top) m.Result = (IntPtr)NativeMethods.HTTOPLEFT;
-                else if (right && top) m.Result = (IntPtr)NativeMethods.HTTOPRIGHT;
-                else if (left && bottom) m.Result = (IntPtr)NativeMethods.HTBOTTOMLEFT;
-                else if (right && bottom) m.Result = (IntPtr)NativeMethods.HTBOTTOMRIGHT;
-                else if (left) m.Result = (IntPtr)NativeMethods.HTLEFT;
-                else if (right) m.Result = (IntPtr)NativeMethods.HTRIGHT;
-                else if (top) m.Result = (IntPtr)NativeMethods.HTTOP;
-                else if (bottom) m.Result = (IntPtr)NativeMethods.HTBOTTOM;
-            }
-            return;
-        }
-
-        base.WndProc(ref m);
-    }
+    /// <summary>主窗口允许拖动边缘缩放；圆角 / 阴影 / 拖动由 ChromeForm 统一提供。</summary>
+    protected override bool AllowResize => true;
 
     private void ApplyWindowMetrics()
     {
@@ -151,7 +95,7 @@ public sealed class MainForm : Form
 
     [System.Diagnostics.CodeAnalysis.MemberNotNull(
         nameof(_titleBar), nameof(_btnSelectFolder), nameof(_pathBox), nameof(_list),
-        nameof(_progress), nameof(_lblProgress), nameof(_btnCancel), nameof(_btnKeepFirst),
+        nameof(_progress), nameof(_lblProgress), nameof(_btnPause), nameof(_btnStop), nameof(_btnKeepFirst),
         nameof(_btnKeepNewest), nameof(_btnCheckAll), nameof(_btnUncheckAll),
         nameof(_lblStats), nameof(_btnDelete), nameof(_progressRow), nameof(_actionsRow))]
     private void BuildUI()
@@ -170,7 +114,7 @@ public sealed class MainForm : Form
         Controls.Add(shell);
 
         _titleBar = new TitleBar(this) { Dock = DockStyle.Fill };
-        _titleBar.ThemeToggleRequested += (_, _) => ToggleTheme();
+        _titleBar.SettingsRequested += (_, _) => OpenSettings();
         shell.Controls.Add(_titleBar, 0, 0);
 
         var body = new Panel
@@ -257,20 +201,28 @@ public sealed class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Theme.TextSecondary,
             Font = Theme.Small,
-            Text = "就绪",
+            Text = ReadyText,
             BackColor = Theme.Background,
         };
         _progress = new ModernProgressBar();
-        _btnCancel = new ModernButton
+        _btnPause = new ModernButton
         {
-            Text = "取消扫描",
+            Text = "暂停",
             Kind = ButtonKind.Secondary,
-            Size = new Size(Px(96), Px(32)),
+            Size = new Size(Px(88), Px(32)),
+            Visible = false,
+        };
+        _btnStop = new ModernButton
+        {
+            Text = "停止扫描",
+            Kind = ButtonKind.Secondary,
+            Size = new Size(Px(104), Px(32)),
             Visible = false,
         };
         _progressRow.Controls.Add(_lblProgress);
         _progressRow.Controls.Add(_progress);
-        _progressRow.Controls.Add(_btnCancel);
+        _progressRow.Controls.Add(_btnPause);
+        _progressRow.Controls.Add(_btnStop);
         _progressRow.Resize += (_, _) => LayoutProgressRow();
         bottom.Controls.Add(_progressRow, 0, 0);
 
@@ -342,19 +294,37 @@ public sealed class MainForm : Form
         int width = _progressRow.ClientSize.Width;
         int height = _progressRow.ClientSize.Height;
         int labelWidth = Math.Min(Px(380), Math.Max(Px(160), width / 3));
-        int cancelWidth = _btnCancel.Visible ? _btnCancel.Width : 0;
+
+        int stopWidth = _btnStop.Visible ? _btnStop.Width : 0;
+        int pauseWidth = _btnPause.Visible ? _btnPause.Width : 0;
+        int buttonsWidth = 0;
+        if (stopWidth > 0) buttonsWidth += stopWidth + Px(14);
+        if (pauseWidth > 0) buttonsWidth += pauseWidth + Px(8);
+        if (pauseWidth > 0 && stopWidth == 0) buttonsWidth -= Px(8);
+
         int progressLeft = labelWidth + Px(14);
-        int progressRight = width - (cancelWidth > 0 ? cancelWidth + Px(14) : 0);
+        int progressRight = width - buttonsWidth;
 
         _lblProgress.Bounds = new Rectangle(0, 0, labelWidth, height);
         _progress.Bounds = new Rectangle(progressLeft, 0, Math.Max(0, progressRight - progressLeft), height);
-        if (_btnCancel.Visible)
+
+        if (stopWidth > 0)
         {
-            _btnCancel.Bounds = new Rectangle(
-                width - cancelWidth,
-                (height - _btnCancel.Height) / 2,
-                cancelWidth,
-                _btnCancel.Height);
+            _btnStop.Bounds = new Rectangle(
+                width - stopWidth,
+                (height - _btnStop.Height) / 2,
+                stopWidth,
+                _btnStop.Height);
+        }
+
+        if (pauseWidth > 0)
+        {
+            int pauseRight = stopWidth > 0 ? _btnStop.Left - Px(8) : width;
+            _btnPause.Bounds = new Rectangle(
+                pauseRight - pauseWidth,
+                (height - _btnPause.Height) / 2,
+                pauseWidth,
+                _btnPause.Height);
         }
     }
 
@@ -386,12 +356,14 @@ public sealed class MainForm : Form
     private void BindControlEvents()
     {
         _btnSelectFolder.Click += BtnSelectFolder_Click;
-        _btnCancel.Click += (_, _) =>
+        _btnPause.Click += (_, _) => TogglePause();
+        _btnStop.Click += (_, _) =>
         {
             if (!_isScanning) return;
             _scanCts?.Cancel();
-            _btnCancel.Enabled = false;
-            _lblProgress.Text = "正在取消…";
+            _btnPause.Enabled = false;
+            _btnStop.Enabled = false;
+            _lblProgress.Text = "正在停止扫描…";
         };
         _btnKeepFirst.Click += (_, _) => QuickKeep(KeepMode.First);
         _btnKeepNewest.Click += (_, _) => QuickKeep(KeepMode.Newest);
@@ -401,11 +373,63 @@ public sealed class MainForm : Form
         _list.CheckedChanged += (_, _) => UpdateStats();
     }
 
-    // ===================== 主题与 DPI 变化：重建界面 =====================
+    // ===================== 主题、设置与 DPI 变化 =====================
 
-    private void ToggleTheme()
+    private string ReadyText => _excludedExtensions.Count > 0
+        ? $"就绪 · 已排除 {_excludedExtensions.Count} 种扩展名"
+        : "就绪";
+
+    private void OpenSettings()
     {
-        Theme.SetDarkMode(!Theme.DarkMode);
+        // 设置窗口打开期间暂停自动换肤，避免背景窗口在对话框后面重建
+        _appearanceTimer.Stop();
+        try
+        {
+            using var dialog = new SettingsForm(_settings);
+
+            // 外观卡片 / 时间修改后立即预览主题（对话框内部已经换肤，这里同步主窗口）
+            dialog.PreviewThemeRequested += (_, _) => RebuildUI();
+
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                // 取消：恢复打开设置前的主题
+                bool originalDark = _settings.ResolveDark(DateTime.Now);
+                if (originalDark != Theme.DarkMode)
+                {
+                    Theme.SetDarkMode(originalDark);
+                    RebuildUI();
+                }
+                return;
+            }
+
+            ApplySettings(dialog.Result);
+        }
+        finally
+        {
+            _appearanceTimer.Start();
+        }
+    }
+
+    private void ApplySettings(AppSettings settings)
+    {
+        _settings.CopyFrom(settings);
+        _settings.Save();
+        _excludedExtensions = _settings.BuildExcludedSet();
+        Theme.SetDarkMode(_settings.ResolveDark(DateTime.Now));
+        RebuildUI();
+        _lblProgress.Text = ReadyText;
+    }
+
+    /// <summary>跟随系统 / 自定义时间模式下，时钟跨越时段或系统主题变化时自动换肤。</summary>
+    private void RefreshAppearanceIfNeeded()
+    {
+        if (_closing || IsDisposed || !IsHandleCreated) return;
+        if (_settings.ThemeMode is ThemeMode.Light or ThemeMode.Dark) return;
+
+        bool dark = _settings.ResolveDark(DateTime.Now);
+        if (dark == Theme.DarkMode) return;
+
+        Theme.SetDarkMode(dark);
         RebuildUI();
     }
 
@@ -425,6 +449,7 @@ public sealed class MainForm : Form
         int progressMaximum = _progress?.Maximum ?? 100;
         bool indeterminate = _progress?.Indeterminate ?? false;
         bool scanning = _isScanning;
+        bool paused = _isPaused;
         bool summarizing = _summarizing;
         bool maximized = WindowState == FormWindowState.Maximized;
 
@@ -440,6 +465,7 @@ public sealed class MainForm : Form
 
         // 恢复状态
         _isScanning = scanning;
+        _isPaused = paused;
         _summarizing = summarizing;
         if (!string.IsNullOrEmpty(folder)) _pathBox.Value = folder;
         _list.SetGroups(_allGroups);
@@ -450,9 +476,12 @@ public sealed class MainForm : Form
         _progress.Maximum = progressMaximum;
         _progress.Value = progressValue;
         _progress.Indeterminate = indeterminate;
-        _lblProgress.Text = progressText;
-        _btnCancel.Visible = scanning;
-        _btnCancel.Enabled = scanning;
+        _lblProgress.Text = paused && scanning ? PausedText : progressText;
+        _btnPause.Text = paused ? "继续" : "暂停";
+        _btnPause.Visible = scanning;
+        _btnPause.Enabled = scanning;
+        _btnStop.Visible = scanning;
+        _btnStop.Enabled = scanning;
         _btnSelectFolder.Enabled = !scanning && !summarizing;
         UpdateActionAvailability();
         LayoutProgressRow();
@@ -484,15 +513,19 @@ public sealed class MainForm : Form
         _progress.Indeterminate = true;
         try
         {
-            FileSummary summary = await Task.Run(() => FileScanner.GetFileSummary(path));
+            HashSet<string> excluded = _excludedExtensions;
+            FileSummary summary = await Task.Run(() => FileScanner.GetFileSummary(path, default, excluded));
             _progress.Indeterminate = false;
             _progress.Maximum = 100;
             _progress.Value = 0;
-            _lblProgress.Text = "就绪";
+            _lblProgress.Text = ReadyText;
 
             if (summary.TotalFiles == 0)
             {
-                MessageBox.Show(this, "这个文件夹里没有找到文件。", "提示",
+                string message = excluded.Count > 0
+                    ? "按当前全局排除规则，这个文件夹里没有需要扫描的文件。可以在设置中调整排除的扩展名。"
+                    : "这个文件夹里没有找到文件。";
+                MessageBox.Show(this, message, "提示",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -502,7 +535,7 @@ public sealed class MainForm : Form
         catch (Exception ex)
         {
             _progress.Indeterminate = false;
-            _lblProgress.Text = "就绪";
+            _lblProgress.Text = ReadyText;
             MessageBox.Show(this, $"读取文件夹失败：{ex.Message}", "错误",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
@@ -522,20 +555,15 @@ public sealed class MainForm : Form
 
     internal Form CreateScanConfirmDialog(FileSummary summary, string folder)
     {
-        var dialog = new Form
+        var dialog = new ChromeDialog
         {
             Text = "扫描确认",
-            FormBorderStyle = FormBorderStyle.None,
             StartPosition = FormStartPosition.CenterParent,
             ShowInTaskbar = false,
-            BackColor = Theme.Border,
-            Font = Theme.UI,
-            AutoScaleMode = AutoScaleMode.None,
-            ClientSize = new Size(Px(560), Px(478)),
-            Padding = new Padding(1),
+            BackColor = Theme.Background,
+            Size = new Size(Px(560), Px(498)),
             Icon = Theme.AppIcon,
         };
-        dialog.HandleCreated += (_, _) => WindowChrome.Apply(dialog);
 
         var shell = new TableLayoutPanel
         {
@@ -553,7 +581,7 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             ShowMinimize = false,
             ShowMaximize = false,
-            ShowThemeToggle = false,
+            ShowSettings = false,
             ShowVersion = false,
         };
         shell.Controls.Add(titleBar, 0, 0);
@@ -574,7 +602,7 @@ public sealed class MainForm : Form
             BackColor = Theme.Background,
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, Px(40)));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Px(64)));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Px(84)));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, Px(52)));
         body.Controls.Add(root);
@@ -589,6 +617,10 @@ public sealed class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
         }, 0, 0);
 
+        string exclusionNote = _excludedExtensions.Count > 0
+            ? $"\n已全局排除 {_excludedExtensions.Count} 种扩展名（可在设置中修改）"
+            : string.Empty;
+
         root.Controls.Add(new Label
         {
             Dock = DockStyle.Fill,
@@ -596,7 +628,7 @@ public sealed class MainForm : Form
             ForeColor = Theme.TextSecondary,
             BackColor = Theme.Background,
             TextAlign = ContentAlignment.MiddleLeft,
-            Text = $"文件夹：{folder}\n共 {summary.TotalFiles:n0} 个文件 · 总大小 {summary.TotalSizeDisplay}（按扩展名统计如下）",
+            Text = $"文件夹：{folder}\n共 {summary.TotalFiles:n0} 个文件 · 总大小 {summary.TotalSizeDisplay}（按扩展名统计如下）{exclusionNote}",
         }, 0, 1);
 
         var card = new CardPanel
@@ -656,12 +688,17 @@ public sealed class MainForm : Form
         try
         {
             var progress = new Progress<ScanProgress>(OnScanProgress);
-            _allGroups = await new FileScanner().ScanAsync(path, progress, token);
+            _scanner = new FileScanner { ExcludedExtensions = _excludedExtensions };
+            _allGroups = await _scanner.ScanAsync(path, progress, token);
 
             _list.SetGroups(_allGroups);
             if (_allGroups.Count == 0)
             {
-                _list.SetEmptyState("没有发现重复文件", "所选文件夹内没有内容完全相同的文件");
+                _list.SetEmptyState(
+                    "没有发现重复文件",
+                    _excludedExtensions.Count > 0
+                        ? "所选文件夹内没有重复文件（已按设置排除部分扩展名）"
+                        : "所选文件夹内没有内容完全相同的文件");
             }
 
             _progress.Indeterminate = false;
@@ -693,12 +730,39 @@ public sealed class MainForm : Form
         }
     }
 
+    private void TogglePause()
+    {
+        if (!_isScanning || _scanner is null) return;
+
+        if (_isPaused)
+        {
+            _scanner.Resume();
+            _isPaused = false;
+            _btnPause.Text = "暂停";
+            _lblProgress.Text = "继续扫描…";
+        }
+        else
+        {
+            _scanner.Pause();
+            _isPaused = true;
+            _btnPause.Text = "继续";
+            _lblProgress.Text = PausedText;
+        }
+    }
+
+    private static string PausedText => "已暂停 · 点击「继续」恢复扫描";
+
     private void OnScanProgress(ScanProgress info)
     {
         switch (info.Phase)
         {
             case 0:
                 _progress.Indeterminate = true;
+                if (_isPaused)
+                {
+                    _lblProgress.Text = PausedText;
+                    break;
+                }
                 _lblProgress.Text = info.ProcessedFiles > 0
                     ? $"正在枚举文件… 已找到 {info.ProcessedFiles:n0} 个"
                     : "正在枚举文件…";
@@ -708,6 +772,11 @@ public sealed class MainForm : Form
                 _progress.Indeterminate = false;
                 _progress.Maximum = Math.Max(1, info.TotalFiles);
                 _progress.Value = info.ProcessedFiles;
+                if (_isPaused)
+                {
+                    _lblProgress.Text = PausedText;
+                    break;
+                }
                 int percent = info.TotalFiles > 0
                     ? (int)(info.ProcessedFiles * 100L / info.TotalFiles)
                     : 100;
@@ -715,7 +784,7 @@ public sealed class MainForm : Form
                 break;
 
             default:
-                _lblProgress.Text = "正在整理结果…";
+                if (!_isPaused) _lblProgress.Text = "正在整理结果…";
                 break;
         }
     }
@@ -723,9 +792,13 @@ public sealed class MainForm : Form
     private void BeginScanningUI()
     {
         _isScanning = true;
+        _isPaused = false;
         _btnSelectFolder.Enabled = false;
-        _btnCancel.Visible = true;
-        _btnCancel.Enabled = true;
+        _btnPause.Text = "暂停";
+        _btnPause.Visible = true;
+        _btnPause.Enabled = true;
+        _btnStop.Visible = true;
+        _btnStop.Enabled = true;
         _progress.Indeterminate = true;
         _progress.Maximum = 100;
         _progress.Value = 0;
@@ -737,8 +810,13 @@ public sealed class MainForm : Form
     private void EndScanningUI()
     {
         _isScanning = false;
-        _btnCancel.Visible = false;
-        _btnCancel.Enabled = false;
+        _isPaused = false;
+        _scanner = null;
+        _btnPause.Text = "暂停";
+        _btnPause.Visible = false;
+        _btnPause.Enabled = false;
+        _btnStop.Visible = false;
+        _btnStop.Enabled = false;
         _btnSelectFolder.Enabled = true;
         UpdateActionAvailability();
         LayoutProgressRow();
@@ -890,7 +968,12 @@ public sealed class MainForm : Form
 
     private void OnFormKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Control && e.KeyCode == Keys.A && !_isScanning && _allGroups.Count > 0)
+        if (e.Control && e.KeyCode == Keys.Oemcomma)
+        {
+            OpenSettings();
+            e.Handled = true;
+        }
+        else if (e.Control && e.KeyCode == Keys.A && !_isScanning && _allGroups.Count > 0)
         {
             QuickKeep(KeepMode.SelectAll);
             e.Handled = true;
@@ -903,6 +986,9 @@ public sealed class MainForm : Form
         else if (e.KeyCode == Keys.Escape && _isScanning)
         {
             _scanCts?.Cancel();
+            _btnPause.Enabled = false;
+            _btnStop.Enabled = false;
+            _lblProgress.Text = "正在停止扫描…";
             e.Handled = true;
         }
     }
@@ -914,6 +1000,18 @@ public sealed class MainForm : Form
         _scanCts?.Cancel();
         e.Cancel = true;
         if (!_isScanning) BeginInvoke(new Action(Close));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _appearanceTimer?.Stop();
+            _appearanceTimer?.Dispose();
+            _scanCts?.Cancel();
+            _scanCts?.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     // ===================== 预览 / 自检辅助（Debug） =====================
@@ -930,7 +1028,7 @@ public sealed class MainForm : Form
             _list.SetEmptyState("还没有重复文件", "选择一个文件夹，开始查找内容完全相同的文件");
             _progress.Maximum = 100;
             _progress.Value = 0;
-            _lblProgress.Text = "就绪";
+            _lblProgress.Text = ReadyText;
             UpdateActionAvailability();
             return;
         }
@@ -941,5 +1039,62 @@ public sealed class MainForm : Form
         UpdateActionAvailability();
     }
 
-    internal void ToggleThemeForTest() => ToggleTheme();
+    internal SettingsForm CreateSettingsDialog() => new(_settings);
+
+    internal void ApplySettingsForTest(AppSettings settings) => ApplySettings(settings);
+
+    internal HashSet<string> ExcludedExtensionsForTest => _excludedExtensions;
+
+    /// <summary>预览 / 自检用：把界面切到"正在扫描"状态，检查暂停与停止按钮。</summary>
+    internal void ApplyScanningPreviewForTest()
+    {
+        _isScanning = true;
+        _isPaused = false;
+        _btnSelectFolder.Enabled = false;
+        _btnPause.Text = "暂停";
+        _btnPause.Visible = true;
+        _btnPause.Enabled = true;
+        _btnStop.Visible = true;
+        _btnStop.Enabled = true;
+        _progress.Indeterminate = false;
+        _progress.Maximum = 2048;
+        _progress.Value = 1284;
+        _lblProgress.Text = "正在计算 SHA-256 · 1,284 / 2,048 · 62%";
+        UpdateActionAvailability();
+        LayoutProgressRow();
+    }
+
+    /// <summary>预览 / 自检用：取消"正在扫描"状态。</summary>
+    internal void ClearScanningPreviewForTest()
+    {
+        _isScanning = false;
+        _isPaused = false;
+        _btnPause.Visible = false;
+        _btnPause.Enabled = false;
+        _btnPause.Text = "暂停";
+        _btnStop.Visible = false;
+        _btnStop.Enabled = false;
+        _progress.Indeterminate = false;
+        _progress.Maximum = 100;
+        _progress.Value = 100;
+        _lblProgress.Text = "完成 · 6 组重复 · 12 个文件";
+        LayoutProgressRow();
+    }
+
+    internal bool PauseButtonVisibleForTest => _btnPause.Visible;
+
+    internal string PauseButtonTextForTest => _btnPause.Text;
+
+    internal bool StopButtonVisibleForTest => _btnStop.Visible;
+
+    internal string StopButtonTextForTest => _btnStop.Text;
+
+    /// <summary>自检用：切换暂停状态（需要有正在运行的扫描器）。</summary>
+    internal void TogglePauseForTest() => TogglePause();
+
+    /// <summary>自检用：提供当前扫描器（测试暂停闸门使用）。</summary>
+    internal void SetScannerForTest(FileScanner scanner) => _scanner = scanner;
+
+    /// <summary>自检用：读取暂停状态。</summary>
+    internal bool IsPausedForTest => _isPaused;
 }

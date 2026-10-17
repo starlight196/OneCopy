@@ -14,18 +14,19 @@ internal static class Theme
 {
     public static bool DarkMode { get; private set; }
 
-    public static void InitializeFromSystem()
+    /// <summary>读取系统当前的应用主题（true = 深色）；读不到时按浅色处理。</summary>
+    public static bool ReadSystemDarkMode()
     {
         try
         {
             object? value = Microsoft.Win32.Registry.GetValue(
                 @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
                 "AppsUseLightTheme", 1);
-            DarkMode = value is int i && i == 0;
+            return value is int i && i == 0;
         }
         catch
         {
-            DarkMode = false;
+            return false;
         }
     }
 
@@ -137,6 +138,7 @@ internal static class Theme
     public static Font Small => Font(8.75f, FontStyle.Regular);
     public static Font SmallBold => Font(8.75f, FontStyle.Bold);
     public static Font Title => Font(13.5f, FontStyle.Bold);
+    public static Font PageTitle => Font(15.5f, FontStyle.Bold);
     public static Font TitleBarFont => Font(10f, FontStyle.Bold);
 
     public static Icon AppIcon => _appIcon ??= CreateAppIcon();

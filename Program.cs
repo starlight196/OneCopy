@@ -12,7 +12,9 @@ static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Theme.InitializeFromSystem();
+
+        AppSettings settings = AppSettings.Load();
+        Theme.SetDarkMode(settings.ResolveDark(DateTime.Now));
 
 #if DEBUG
         // 开发调试：离屏渲染界面预览图，例如
@@ -42,9 +44,29 @@ static class Program
             SmokeTest(args[1]);
             return;
         }
+
+        // 开发调试：真正显示到屏幕上再屏幕截图，用于检查 DWM 圆角（窗口会短暂出现）
+        //   dotnet run -c Debug -- --screen-capture 输出.png [settings|main] [dark|light|system]
+        if (args.Length >= 2 && args[0] == "--screen-capture")
+        {
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+            try
+            {
+                PreviewRenderer.RenderScreenCapture(
+                    args[1],
+                    args.Length >= 3 ? args[2] : "settings",
+                    args.Length >= 4 ? args[3] : "system");
+            }
+            catch (Exception ex)
+            {
+                LogDebugError(ex);
+                Environment.ExitCode = 1;
+            }
+            return;
+        }
 #endif
 
-        Application.Run(new MainForm());
+        Application.Run(new MainForm(settings));
     }
 
 #if DEBUG
@@ -54,7 +76,20 @@ static class Program
         string logPath = fullPath + ".log";
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
 
-        using var form = new MainForm
+        // 自检期间把设置写到输出目录，避免污染真实的 %AppData% 设置
+        AppSettings.PathOverride = Path.Combine(
+            Path.GetDirectoryName(fullPath) ?? ".",
+            "settings-smoke.json");
+        try
+        {
+            File.Delete(AppSettings.PathOverride);
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        using var form = new MainForm(AppSettings.Load())
         {
             StartPosition = FormStartPosition.Manual,
             Location = new Point(-4000, -4000),
@@ -105,11 +140,20 @@ static class Program
 
             try
             {
-                RunThemeToggleSelfCheck(form, lines);
+                RunSettingsSelfCheck(form, lines, fullPath);
             }
             catch (Exception ex)
             {
-                lines.Add("themeToggle=fail " + ex.Message);
+                lines.Add("settings=fail " + ex.Message);
+            }
+
+            try
+            {
+                RunPauseScanCheck(lines, fullPath);
+            }
+            catch (Exception ex)
+            {
+                lines.Add("pauseScan=fail " + ex.Message);
             }
 
             try
@@ -132,6 +176,15 @@ static class Program
             catch
             {
                 // 忽略日志写入失败
+            }
+
+            try
+            {
+                if (File.Exists(AppSettings.PathOverride)) File.Delete(AppSettings.PathOverride);
+            }
+            catch
+            {
+                // 忽略
             }
             form.Close();
         };
@@ -166,7 +219,23 @@ static class Program
         lines.Add($"hitTestLeft={HitTest(origin.X + 2, origin.Y + form.Height / 2)}");
         lines.Add($"hitTestTop={HitTest(origin.X + form.Width / 2, origin.Y + 2)}");
         lines.Add($"hitTestCorner={HitTest(origin.X + 2, origin.Y + 2)}");
-        lines.Add($"themeButtonFound={FindCaptionButton(form, CaptionKind.Theme) is not null}");
+        lines.Add($"settingsButtonFound={FindCaptionButton(form, CaptionKind.Settings) is not null}");
+        lines.Add($"chromeForm={form is ChromeForm}");
+        lines.Add($"captionButtons={CaptionKindList(form)}");
+        lines.Add($"mainStyles={DescribeChrome(form)}");
+
+        // 扫描确认对话框也应使用同样的圆角窗口框架
+        using (Form confirmProbe = form.CreateScanConfirmDialog(
+                   PreviewRenderer.BuildDemoSummary(), PreviewRenderer.BuildFolder()))
+        {
+            confirmProbe.StartPosition = FormStartPosition.Manual;
+            confirmProbe.Location = new Point(-4000, -4000);
+            confirmProbe.ShowInTaskbar = false;
+            confirmProbe.Show();
+            Application.DoEvents();
+            lines.Add($"confirmStyles={DescribeChrome(confirmProbe)}");
+            confirmProbe.Close();
+        }
 
         form.WindowState = FormWindowState.Maximized;
         Application.DoEvents();
@@ -190,6 +259,21 @@ static class Program
         restore?.PerformClick();
         Application.DoEvents();
         lines.Add($"restoreButtonFound={restore is not null} stateAfterRestoreClick={form.WindowState} client={form.ClientSize}");
+
+        // 扫描中的"暂停 / 继续"与"停止扫描"按钮
+        form.ApplyScanningPreviewForTest();
+        Application.DoEvents();
+        lines.Add(
+            $"scanControls pauseVisible={form.PauseButtonVisibleForTest} " +
+            $"pauseText={form.PauseButtonTextForTest} " +
+            $"stopVisible={form.StopButtonVisibleForTest} stopText={form.StopButtonTextForTest}");
+        form.ClearScanningPreviewForTest();
+        Application.DoEvents();
+        lines.Add(
+            $"scanControlsIdle pauseVisible={form.PauseButtonVisibleForTest} " +
+            $"stopVisible={form.StopButtonVisibleForTest}");
+        form.ApplyPreviewData(PreviewRenderer.BuildFolder(), PreviewRenderer.BuildDemoGroups());
+        Application.DoEvents();
     }
 
     private static CaptionButton? FindCaptionButton(Control parent, CaptionKind kind)
@@ -201,6 +285,42 @@ static class Program
             if (found is not null) return found;
         }
         return null;
+    }
+
+    /// <summary>列出窗口内所有标题栏按钮，确认没有多余的快速主题切换按钮。</summary>
+    private static string CaptionKindList(Control parent)
+    {
+        var kinds = new List<string>();
+        void Walk(Control control)
+        {
+            foreach (Control child in control.Controls)
+            {
+                if (child is CaptionButton button) kinds.Add(button.Kind.ToString());
+                Walk(child);
+            }
+        }
+        Walk(parent);
+        return string.Join(",", kinds);
+    }
+
+    /// <summary>窗口框架自检：WS_THICKFRAME / WS_CAPTION 与 DWM 圆角偏好，确认所有窗口外观一致。</summary>
+    private static string DescribeChrome(Form form)
+    {
+        long style = NativeMethods.GetWindowStyle(form.Handle);
+        int corner = -1;
+        try
+        {
+            NativeMethods.DwmGetWindowAttribute(
+                form.Handle, NativeMethods.DWMWA_WINDOW_CORNER_PREFERENCE, out corner, sizeof(int));
+        }
+        catch
+        {
+            // 老系统读不到圆角属性时忽略
+        }
+
+        bool thickFrame = (style & 0x00040000) != 0;
+        bool caption = (style & 0x00C00000) == 0x00C00000;
+        return $"thickFrame={thickFrame} caption={caption} cornerPref={corner}";
     }
 
     /// <summary>
@@ -263,7 +383,7 @@ static class Program
         try
         {
             DialogResult result = dialog.ShowDialog(form);
-            lines.Add($"dialog buttonFound={clicked} result={result}");
+            lines.Add($"dialog buttonFound={clicked} result={result} chrome={dialog is ChromeForm}");
         }
         finally
         {
@@ -271,22 +391,254 @@ static class Program
         }
     }
 
-    /// <summary>验证主题切换会重建界面且不丢失扫描结果。</summary>
-    private static void RunThemeToggleSelfCheck(MainForm form, List<string> lines)
+    /// <summary>
+    /// 验证设置窗口：导航页切换、外观模式、自定义时间、全局排除扩展名的解析、
+    /// 检查更新版本比较、持久化往返与扫描排除效果。
+    /// </summary>
+    private static void RunSettingsSelfCheck(MainForm form, List<string> lines, string screenshotPath)
     {
-        const System.Reflection.BindingFlags Flags =
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+        lines.Add($"settingsButtonFound={FindCaptionButton(form, CaptionKind.Settings) is not null}");
 
-        bool before = Theme.DarkMode;
-        form.ToggleThemeForTest();
+        using SettingsForm dialog = form.CreateSettingsDialog();
+        dialog.StartPosition = FormStartPosition.Manual;
+        dialog.Location = new Point(-4000, -4000);
+        dialog.ShowInTaskbar = false;
+        dialog.Show();
+        Application.DoEvents();
+        lines.Add(
+            $"settingsDialogShown={dialog.Visible} title={dialog.Text} " +
+            $"chrome={dialog is ChromeForm} navCount={dialog.NavItemCountForTest}");
+        lines.Add($"settingsStyles={DescribeChrome(dialog)}");
+
+        void Shot(Control control, string fileName, string label)
+        {
+            try
+            {
+                string? directory = Path.GetDirectoryName(Path.GetFullPath(screenshotPath));
+                string path = Path.Combine(directory ?? ".", fileName);
+                using Bitmap bitmap = CaptureWindow(control);
+                bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                lines.Add($"{label}=ok {bitmap.Width}x{bitmap.Height}");
+            }
+            catch (Exception ex)
+            {
+                lines.Add($"{label}=fail " + ex.Message);
+            }
+        }
+
+        Shot(dialog, "settings.png", "settingsScreenshot");
+
+        // 导航页切换
+        dialog.ShowPageForTest(SettingsPage.About);
+        Application.DoEvents();
+        lines.Add(
+            $"settingsPage aboutVisible={dialog.PageVisibleForTest(SettingsPage.About)} " +
+            $"title={dialog.PageTitleForTest(SettingsPage.About)} " +
+            $"appearanceVisible={dialog.PageVisibleForTest(SettingsPage.Appearance)}");
+        Shot(dialog, "settings-about.png", "settingsAboutScreenshot");
+
+        dialog.ShowPageForTest(SettingsPage.Update);
+        dialog.PreviewNewerResultForTest();
+        Application.DoEvents();
+        lines.Add($"settingsPage updateTitle={dialog.PageTitleForTest(SettingsPage.Update)}");
+        Shot(dialog, "settings-update.png", "settingsUpdateScreenshot");
+
+        dialog.ShowPageForTest(SettingsPage.Exclusions);
+        Application.DoEvents();
+        lines.Add(
+            $"settingsPage exclusionsTitle={dialog.PageTitleForTest(SettingsPage.Exclusions)} " +
+            $"countText={dialog.ExtensionsCountForTest.Replace("\r", "").Replace("\n", "")}");
+        Shot(dialog, "settings-exclusions.png", "settingsExclusionsScreenshot");
+
+        dialog.ShowPageForTest(SettingsPage.Appearance);
         Application.DoEvents();
 
-        var list = (DuplicateListView)typeof(MainForm).GetField("_list", Flags)!.GetValue(form)!;
-        lines.Add($"themeAfterToggle={Theme.DarkMode} groupsAfter={list.Groups.Count}");
+        // 检查更新的版本比较逻辑（不访问网络）
+        lines.Add(
+            $"updateCompare newer={UpdateChecker.IsNewer("v1.4.2", "1.4.1")} " +
+            $"same={UpdateChecker.IsNewer("v1.4.1", "1.4.1")} " +
+            $"older={UpdateChecker.IsNewer("v1.4.0", "1.4.1")} " +
+            $"parse={UpdateChecker.ParseVersion("v1.4.1+abc")}");
 
-        form.ToggleThemeForTest();
+        // 自定义时间 + 全局排除扩展名
+        dialog.SelectModeForTest(ThemeMode.Custom);
+        dialog.SetTimesForTest(new TimeOnly(19, 0), new TimeOnly(7, 0));
+        dialog.SetExtensionsForTest(".tmp\n*.bak, log");
+        bool saved = dialog.SaveForTest();
+        lines.Add(
+            $"settingsSaveValid={saved} mode={dialog.Result.ThemeMode} " +
+            $"range={dialog.Result.DarkStart}-{dialog.Result.DarkEnd} " +
+            $"exts={string.Join(",", dialog.Result.ExcludedExtensions)}");
+
+        AppSettings probe = dialog.Result.Clone();
+        lines.Add(
+            $"customResolve 20:00={probe.ResolveDark(new DateTime(2026, 1, 1, 20, 0, 0))} " +
+            $"12:00={probe.ResolveDark(new DateTime(2026, 1, 1, 12, 0, 0))} " +
+            $"06:59={probe.ResolveDark(new DateTime(2026, 1, 1, 6, 59, 0))}");
+
+        // 非法扩展名应被拒绝，并跳到对应页面
+        using (SettingsForm invalid = form.CreateSettingsDialog())
+        {
+            invalid.SetExtensionsForTest(".tmp\n?bad?");
+            bool accepted = invalid.SaveForTest();
+            lines.Add(
+                $"settingsInvalidRejected={!accepted} page={invalid.CurrentPageForTest} " +
+                $"error='{invalid.ErrorTextForTest}'");
+        }
+
+        // 持久化往返
+        bool persisted = dialog.Result.Save();
+        AppSettings loaded = AppSettings.Load();
+        lines.Add(
+            $"settingsPersist={persisted} loadedMode={loaded.ThemeMode} " +
+            $"loadedExts={loaded.ExcludedExtensions.Count} loadedRange={loaded.DarkStart}-{loaded.DarkEnd}");
+
+        // 应用设置会更新主题与排除集合
+        form.ApplySettingsForTest(dialog.Result);
         Application.DoEvents();
-        lines.Add($"themeRestored={Theme.DarkMode == before}");
+        lines.Add(
+            $"settingsApplied themeDark={Theme.DarkMode} " +
+            $"expected={dialog.Result.ResolveDark(DateTime.Now)} " +
+            $"exts={form.ExcludedExtensionsForTest.Count}");
+
+        // 外观实时预览：点击卡片立即换肤，不需要保存
+        bool beforeDark = Theme.DarkMode;
+        dialog.SelectModeWithPreviewForTest(ThemeMode.Light);
+        for (int i = 0; i < 30 && Theme.DarkMode; i++)
+        {
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+        bool lightPreview = !Theme.DarkMode;
+
+        dialog.SelectModeWithPreviewForTest(ThemeMode.Dark);
+        for (int i = 0; i < 30 && !Theme.DarkMode; i++)
+        {
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+        bool darkPreview = Theme.DarkMode;
+        lines.Add(
+            $"themeLivePreview beforeDark={beforeDark} lightPreview={lightPreview} " +
+            $"darkPreview={darkPreview} navAfterRebuild={dialog.NavItemCountForTest}");
+
+        RunExclusionScanCheck(form, lines, screenshotPath);
+    }
+
+    /// <summary>验证扫描暂停闸门：暂停期间任务不推进，继续后正常完成。</summary>
+    private static void RunPauseScanCheck(List<string> lines, string screenshotPath)
+    {
+        string? directory = Path.GetDirectoryName(Path.GetFullPath(screenshotPath));
+        string testDir = Path.Combine(directory ?? ".", "pause-test");
+
+        try
+        {
+            Directory.CreateDirectory(testDir);
+            for (int i = 0; i < 6; i++)
+            {
+                File.WriteAllText(Path.Combine(testDir, $"dup{i}.txt"), "pause-test-content");
+            }
+
+            var scanner = new FileScanner();
+            scanner.Pause();
+            Task<List<DuplicateGroup>> task = scanner.ScanAsync(
+                testDir, new Progress<ScanProgress>(), CancellationToken.None);
+
+            // 暂停状态下等待一段时间，任务不应完成
+            WaitWithEvents(Task.Delay(300), 3000);
+            bool held = !task.IsCompleted;
+            bool reportedPaused = scanner.IsPaused;
+
+            scanner.Resume();
+            if (!WaitWithEvents(task, 15000))
+            {
+                lines.Add("pauseScan=timeout");
+                return;
+            }
+
+            List<DuplicateGroup> groups = task.GetAwaiter().GetResult();
+            lines.Add(
+                $"pauseScan heldWhilePaused={held} reportedPaused={reportedPaused} " +
+                $"groups={groups.Count} files={groups.Sum(g => g.FileCount)}");
+        }
+        catch (Exception ex)
+        {
+            lines.Add("pauseScan=fail " + ex.Message);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(testDir, true);
+            }
+            catch
+            {
+                // 忽略
+            }
+        }
+    }
+
+    /// <summary>验证全局排除扩展名同时作用于快速统计与哈希扫描。</summary>
+    private static void RunExclusionScanCheck(MainForm form, List<string> lines, string screenshotPath)
+    {
+        string? directory = Path.GetDirectoryName(Path.GetFullPath(screenshotPath));
+        string testDir = Path.Combine(directory ?? ".", "scan-test");
+
+        try
+        {
+            Directory.CreateDirectory(testDir);
+            File.WriteAllText(Path.Combine(testDir, "keep1.txt"), "same-content");
+            File.WriteAllText(Path.Combine(testDir, "keep2.txt"), "same-content");
+            File.WriteAllText(Path.Combine(testDir, "skip1.tmp"), "same-content");
+            File.WriteAllText(Path.Combine(testDir, "skip2.tmp"), "same-content");
+
+            HashSet<string> excluded = form.ExcludedExtensionsForTest;
+            FileSummary all = FileScanner.GetFileSummary(testDir);
+            FileSummary filtered = FileScanner.GetFileSummary(testDir, default, excluded);
+            lines.Add($"exclusionSummary all={all.TotalFiles} filtered={filtered.TotalFiles}");
+
+            var scanner = new FileScanner { ExcludedExtensions = excluded };
+            Task<List<DuplicateGroup>> task = scanner.ScanAsync(
+                testDir, new Progress<ScanProgress>(), CancellationToken.None);
+            if (!WaitWithEvents(task, 15000))
+            {
+                lines.Add("exclusionScan=timeout");
+                return;
+            }
+
+            List<DuplicateGroup> groups = task.GetAwaiter().GetResult();
+            lines.Add(
+                $"exclusionScan groups={groups.Count} files={groups.Sum(g => g.FileCount)} " +
+                $"names={string.Join(",", groups.SelectMany(g => g.Files).Select(f => f.FileName).OrderBy(n => n))}");
+        }
+        catch (Exception ex)
+        {
+            lines.Add("exclusionScan=fail " + ex.Message);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(testDir, true);
+            }
+            catch
+            {
+                // 忽略
+            }
+        }
+    }
+
+    /// <summary>在自检中等待异步任务完成，同时继续泵消息循环避免死锁。</summary>
+    private static bool WaitWithEvents(Task task, int timeoutMs)
+    {
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (!task.IsCompleted)
+        {
+            if (Environment.TickCount64 > deadline) return false;
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+        return true;
     }
 
     private static Bitmap CaptureWindow(Control control)
@@ -317,6 +669,6 @@ static class Program
     }
 
     private static void LogDebugError(Exception ex) =>
-        File.WriteAllText(Path.Combine(Path.GetTempPath(), "dff-preview-error.log"), ex.ToString());
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "onecopy-preview-error.log"), ex.ToString());
 #endif
 }

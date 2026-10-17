@@ -10,7 +10,7 @@ namespace OneCopy;
 /// <summary>
 /// 开发调试用的界面预览渲染器：把窗口显示在屏幕外，用 PrintWindow 截取真实渲染结果。
 /// 仅在 Debug 构建中可用。用法：
-///   dotnet run -c Debug -- --preview 输出.png [populated|empty|dialog] [dark|light|system]
+///   dotnet run -c Debug -- --preview 输出.png [populated|empty|scanning|dialog|settings|settings-exclusions|settings-update|settings-about] [dark|light|system]
 /// </summary>
 internal static class PreviewRenderer
 {
@@ -28,7 +28,13 @@ internal static class PreviewRenderer
             return;
         }
 
-        using var form = new MainForm
+        if (mode.StartsWith("settings", StringComparison.OrdinalIgnoreCase))
+        {
+            RenderSettingsDialog(fullPath, mode);
+            return;
+        }
+
+        using var form = new MainForm(BuildDemoSettings())
         {
             StartPosition = FormStartPosition.Manual,
             Location = new Point(-4000, -4000),
@@ -39,6 +45,11 @@ internal static class PreviewRenderer
         form.ApplyPreviewData(empty ? string.Empty : BuildFolder(), empty ? new List<DuplicateGroup>() : BuildDemoGroups());
         form.Show();
         Application.DoEvents();
+        if (mode == "scanning")
+        {
+            form.ApplyScanningPreviewForTest();
+            Application.DoEvents();
+        }
 
         using Bitmap bitmap = CaptureWindow(form);
         bitmap.Save(fullPath, ImageFormat.Png);
@@ -47,7 +58,7 @@ internal static class PreviewRenderer
 
     private static void RenderDialog(string fullPath)
     {
-        using var owner = new MainForm
+        using var owner = new MainForm(BuildDemoSettings())
         {
             StartPosition = FormStartPosition.Manual,
             Location = new Point(-4000, -4000),
@@ -68,6 +79,34 @@ internal static class PreviewRenderer
         owner.Close();
     }
 
+    private static void RenderSettingsDialog(string fullPath, string mode)
+    {
+        using var dialog = new SettingsForm(BuildDemoSettings());
+        dialog.StartPosition = FormStartPosition.Manual;
+        dialog.Location = new Point(-4000, -4000);
+        dialog.ShowInTaskbar = false;
+        dialog.Show();
+        Application.DoEvents();
+
+        SettingsPage page = mode.ToLowerInvariant() switch
+        {
+            "settings-exclusions" => SettingsPage.Exclusions,
+            "settings-update" => SettingsPage.Update,
+            "settings-about" => SettingsPage.About,
+            _ => SettingsPage.Appearance,
+        };
+        if (page != SettingsPage.Appearance)
+        {
+            dialog.ShowPageForTest(page);
+            if (page == SettingsPage.Update) dialog.PreviewNewerResultForTest();
+            Application.DoEvents();
+        }
+
+        using Bitmap bitmap = CaptureWindow(dialog);
+        bitmap.Save(fullPath, ImageFormat.Png);
+        dialog.Close();
+    }
+
     private static Bitmap CaptureWindow(Control control)
     {
         var bitmap = new Bitmap(Math.Max(1, control.Width), Math.Max(1, control.Height));
@@ -84,6 +123,61 @@ internal static class PreviewRenderer
         return bitmap;
     }
 
+    /// <summary>
+    /// 真正显示到屏幕上再用屏幕截图：用于检查 DWM 圆角（PrintWindow 截不到合成器圆角）。
+    /// 仅用于开发自检，窗口会短暂出现。
+    /// </summary>
+    public static void RenderScreenCapture(string outputPath, string target = "settings", string theme = "system")
+    {
+        ApplyTheme(theme);
+
+        string fullPath = Path.GetFullPath(outputPath);
+        string? directory = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+
+        Form form;
+        if (string.Equals(target, "main", StringComparison.OrdinalIgnoreCase))
+        {
+            var main = new MainForm(BuildDemoSettings());
+            main.ApplyPreviewData(BuildFolder(), BuildDemoGroups());
+            form = main;
+        }
+        else
+        {
+            form = new SettingsForm(BuildDemoSettings());
+        }
+
+        using (form)
+        {
+            Screen screen = Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position);
+            Rectangle area = screen.WorkingArea;
+            form.StartPosition = FormStartPosition.Manual;
+            form.Location = new Point(
+                area.Left + Math.Max(0, (area.Width - form.Width) / 2),
+                area.Top + Math.Max(0, (area.Height - form.Height) / 2));
+            form.Show();
+            form.Activate();
+
+            // 等 DWM 完成合成，圆角 / 阴影才会出现在屏幕截图中
+            long deadline = Environment.TickCount64 + 700;
+            while (Environment.TickCount64 < deadline)
+            {
+                Application.DoEvents();
+                Thread.Sleep(15);
+            }
+
+            Rectangle bounds = form.Bounds;
+            bounds.Inflate(24, 24);
+            using var bitmap = new Bitmap(bounds.Width, bounds.Height);
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            }
+            bitmap.Save(fullPath, ImageFormat.Png);
+            form.Close();
+        }
+    }
+
     private static void ApplyTheme(string theme)
     {
         if (string.Equals(theme, "dark", StringComparison.OrdinalIgnoreCase))
@@ -96,8 +190,16 @@ internal static class PreviewRenderer
         }
         else
         {
-            Theme.InitializeFromSystem();
+            Theme.SetDarkMode(Theme.ReadSystemDarkMode());
         }
+    }
+
+    internal static AppSettings BuildDemoSettings()
+    {
+        var settings = new AppSettings { ThemeMode = ThemeMode.Custom };
+        settings.SetDarkRange(new TimeOnly(19, 0), new TimeOnly(7, 0));
+        settings.ExcludedExtensions = new List<string> { ".tmp", ".log", ".bak", ".cache" };
+        return settings;
     }
 
     internal static string BuildFolder() => @"C:\Users\Public\Downloads\Sample Pictures";

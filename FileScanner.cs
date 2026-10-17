@@ -32,6 +32,24 @@ public class FileScanner
     /// <summary>大文件读取缓冲区大小 (1 MB)</summary>
     private const int HashBufferSize = 1_048_576;
 
+    /// <summary>全局排除的扩展名集合（含前导点，大小写不敏感）。</summary>
+    public HashSet<string> ExcludedExtensions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>暂停闸门：置位时扫描继续，Reset 时各工作线程在下一个检查点挂起。</summary>
+    private readonly ManualResetEventSlim _pauseGate = new(initialState: true);
+
+    /// <summary>当前是否处于暂停状态。</summary>
+    public bool IsPaused => !_pauseGate.IsSet;
+
+    /// <summary>暂停扫描（当前正在处理的文件会完成，之后的工作挂起）。</summary>
+    public void Pause() => _pauseGate.Reset();
+
+    /// <summary>继续扫描。</summary>
+    public void Resume() => _pauseGate.Set();
+
+    private static bool IsExcluded(string extension, HashSet<string>? excluded) =>
+        excluded is { Count: > 0 } && extension.Length > 0 && excluded.Contains(extension);
+
     /// <summary>
     /// 扫描指定目录，返回所有重复文件组。
     /// </summary>
@@ -49,8 +67,11 @@ public class FileScanner
 
         var allFiles = new List<FileInfo>();
         int enumerated = 0;
-        await Task.Run(() => EnumerateFiles(rootPath, allFiles, cancellationToken, () =>
+        HashSet<string> excluded = ExcludedExtensions;
+        await Task.Run(() => EnumerateFiles(rootPath, allFiles, cancellationToken, excluded, () =>
         {
+            // 每个文件检查一次暂停 / 取消，暂停时工作线程在此挂起
+            _pauseGate.Wait(cancellationToken);
             enumerated++;
             if ((enumerated & 255) == 0)
             {
@@ -113,6 +134,8 @@ public class FileScanner
 
                 foreach (var fileInfo in filesInGroup)
                 {
+                    // 暂停 / 取消检查点：暂停期间工作线程在此挂起
+                    _pauseGate.Wait(cancellationToken);
                     cancellationToken.ThrowIfCancellationRequested();
 
                     string? hash = null;
@@ -201,12 +224,13 @@ public class FileScanner
     }
 
     /// <summary>
-    /// 递归枚举目录下所有文件，跳过重解析点（符号链接等），忽略无权限目录。
+    /// 递归枚举目录下所有文件，跳过重解析点（符号链接等）与全局排除的扩展名，忽略无权限目录。
     /// </summary>
     private static void EnumerateFiles(
         string path,
         List<FileInfo> fileList,
         CancellationToken ct,
+        HashSet<string>? excluded,
         Action? onFound = null)
     {
         try
@@ -218,6 +242,7 @@ public class FileScanner
                 try
                 {
                     var fi = new FileInfo(filePath);
+                    if (IsExcluded(fi.Extension, excluded)) continue;
                     fileList.Add(fi);
                     onFound?.Invoke();
                 }
@@ -236,7 +261,7 @@ public class FileScanner
                     var di = new DirectoryInfo(dirPath);
                     if ((di.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
                         continue;
-                    EnumerateFiles(dirPath, fileList, ct, onFound);
+                    EnumerateFiles(dirPath, fileList, ct, excluded, onFound);
                 }
                 catch
                 {
@@ -271,12 +296,15 @@ public class FileScanner
     /// <summary>
     /// 快速扫描目录，按扩展名统计文件数和大小（不计算哈希，很快）。
     /// </summary>
-    public static FileSummary GetFileSummary(string rootPath, CancellationToken ct = default)
+    public static FileSummary GetFileSummary(
+        string rootPath,
+        CancellationToken ct = default,
+        HashSet<string>? excludedExtensions = null)
     {
         var summary = new FileSummary();
         var extMap = new Dictionary<string, (int Count, long Size)>(StringComparer.OrdinalIgnoreCase);
 
-        EnumerateFilesForSummary(rootPath, summary, extMap, ct);
+        EnumerateFilesForSummary(rootPath, summary, extMap, excludedExtensions, ct);
 
         summary.Extensions = extMap
             .OrderByDescending(kv => kv.Value.Size)
@@ -294,6 +322,7 @@ public class FileScanner
     private static void EnumerateFilesForSummary(
         string path, FileSummary summary,
         Dictionary<string, (int Count, long Size)> extMap,
+        HashSet<string>? excluded,
         CancellationToken ct)
     {
         try
@@ -304,6 +333,7 @@ public class FileScanner
                 try
                 {
                     var fi = new FileInfo(filePath);
+                    if (IsExcluded(fi.Extension, excluded)) continue;
                     long size = fi.Length;
                     summary.TotalFiles++;
                     summary.TotalSize += size;
@@ -325,7 +355,7 @@ public class FileScanner
                     var di = new DirectoryInfo(dirPath);
                     if ((di.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
                         continue;
-                    EnumerateFilesForSummary(dirPath, summary, extMap, ct);
+                    EnumerateFilesForSummary(dirPath, summary, extMap, excluded, ct);
                 }
                 catch { }
             }

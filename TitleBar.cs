@@ -13,7 +13,7 @@ internal enum CaptionKind
     Maximize,
     Restore,
     Close,
-    Theme,
+    Settings,
 }
 
 /// <summary>窗口圆角 / 深色边框等 DWM 效果。</summary>
@@ -39,18 +39,18 @@ internal static class WindowChrome
     }
 }
 
-/// <summary>自绘的窗口标题栏：应用标志、标题、主题切换与窗口控制按钮，支持拖动与双击最大化。</summary>
+/// <summary>自绘的窗口标题栏：应用标志、标题、设置与窗口控制按钮，支持拖动与双击最大化。</summary>
 internal sealed class TitleBar : PaintedControl
 {
     private readonly Form _form;
     private readonly CaptionButton _minimize;
     private readonly CaptionButton _maximize;
     private readonly CaptionButton _close;
-    private readonly CaptionButton _themeToggle;
+    private readonly CaptionButton _settingsButton;
     private readonly ToolTip _toolTip;
     private bool _showMinimize = true;
     private bool _showMaximize = true;
-    private bool _showThemeToggle = true;
+    private bool _showSettings = true;
     private bool _showVersion = true;
     private readonly string _versionText = BuildVersionText();
 
@@ -63,7 +63,7 @@ internal sealed class TitleBar : PaintedControl
         return string.IsNullOrEmpty(version) ? string.Empty : "v" + version;
     }
 
-    public event EventHandler? ThemeToggleRequested;
+    public event EventHandler? SettingsRequested;
 
     public bool ShowMinimize
     {
@@ -87,13 +87,14 @@ internal sealed class TitleBar : PaintedControl
         }
     }
 
-    public bool ShowThemeToggle
+    /// <summary>是否显示设置按钮（位于最小化按钮左侧）。</summary>
+    public bool ShowSettings
     {
-        get => _showThemeToggle;
+        get => _showSettings;
         set
         {
-            _showThemeToggle = value;
-            _themeToggle.Visible = value;
+            _showSettings = value;
+            _settingsButton.Visible = value;
             PerformLayout();
         }
     }
@@ -114,18 +115,18 @@ internal sealed class TitleBar : PaintedControl
         _form = form;
         _toolTip = new ToolTip { InitialDelay = 400, ReshowDelay = 200 };
 
-        _themeToggle = new CaptionButton(CaptionKind.Theme);
+        _settingsButton = new CaptionButton(CaptionKind.Settings);
         _minimize = new CaptionButton(CaptionKind.Minimize);
         _maximize = new CaptionButton(CaptionKind.Maximize);
         _close = new CaptionButton(CaptionKind.Close);
-        Controls.AddRange(new Control[] { _themeToggle, _minimize, _maximize, _close });
+        Controls.AddRange(new Control[] { _settingsButton, _minimize, _maximize, _close });
 
-        _toolTip.SetToolTip(_themeToggle, "切换深色 / 浅色主题");
+        _toolTip.SetToolTip(_settingsButton, "设置");
         _toolTip.SetToolTip(_minimize, "最小化");
         _toolTip.SetToolTip(_maximize, "最大化 / 还原");
         _toolTip.SetToolTip(_close, "关闭");
 
-        _themeToggle.Click += (_, _) => ThemeToggleRequested?.Invoke(this, EventArgs.Empty);
+        _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
         _minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
         _maximize.Click += (_, _) => ToggleMaximize();
         _close.Click += (_, _) => _form.Close();
@@ -171,16 +172,34 @@ internal sealed class TitleBar : PaintedControl
         if (_showMaximize) Place(_maximize);
         if (_showMinimize) Place(_minimize);
 
-        if (_showThemeToggle)
+        // 设置按钮（原快速切换主题按钮的位置）
+        if (_showSettings)
         {
             x -= Px(6);
             x -= Px(38);
-            _themeToggle.Bounds = new Rectangle(x, top, Px(38), buttonHeight);
+            _settingsButton.Bounds = new Rectangle(x, top, Px(38), buttonHeight);
         }
         else
         {
-            _themeToggle.Bounds = Rectangle.Empty;
+            _settingsButton.Bounds = Rectangle.Empty;
         }
+    }
+
+    /// <summary>标题文本右边界：所有可见按钮中最靠左的位置。</summary>
+    private int ContentRightEdge()
+    {
+        int right = Width;
+        bool found = false;
+        foreach (CaptionButton button in new[] { _settingsButton, _minimize, _maximize, _close })
+        {
+            if (!button.Visible || button.Width <= 0) continue;
+            if (!found || button.Left < right)
+            {
+                right = button.Left;
+                found = true;
+            }
+        }
+        return (found ? right : Width) - Px(12);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -207,8 +226,8 @@ internal sealed class TitleBar : PaintedControl
 
         // 标题
         int titleLeft = Px(48);
-        int titleRight = (_showThemeToggle ? _themeToggle.Left : _close.Left) - Px(12);
-        var titleRect = new Rectangle(titleLeft, 0, Math.Max(0, titleRight - titleLeft), Height - 1);
+        int contentRight = ContentRightEdge();
+        var titleRect = new Rectangle(titleLeft, 0, Math.Max(0, contentRight - titleLeft), Height - 1);
         TextRenderer.DrawText(
             g,
             _form.Text,
@@ -228,7 +247,7 @@ internal sealed class TitleBar : PaintedControl
                 new Size(int.MaxValue, int.MaxValue),
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
             int versionLeft = titleLeft + titleSize.Width + Px(10);
-            int versionRight = titleRight;
+            int versionRight = contentRight;
             if (versionRight > versionLeft)
             {
                 var versionRect = new Rectangle(versionLeft, 0, versionRight - versionLeft, Height - 1);
@@ -273,7 +292,7 @@ internal sealed class TitleBar : PaintedControl
     }
 }
 
-/// <summary>标题栏上的图标按钮（最小化 / 最大化 / 关闭 / 主题切换）。</summary>
+/// <summary>标题栏上的图标按钮（最小化 / 最大化 / 关闭 / 设置）。</summary>
 internal sealed class CaptionButton : PaintedControl
 {
     private bool _hover;
@@ -303,12 +322,13 @@ internal sealed class CaptionButton : PaintedControl
         bool close = Kind == CaptionKind.Close;
         bool highlight = _hover || _pressed;
 
+        Color hoverBackground = close
+            ? (_pressed ? Theme.DangerDown : Theme.DangerHover)
+            : (_pressed ? Theme.CaptionPressed : Theme.CaptionHover);
+
         if (highlight)
         {
-            Color background = close
-                ? (_pressed ? Theme.DangerDown : Theme.DangerHover)
-                : (_pressed ? Theme.CaptionPressed : Theme.CaptionHover);
-            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Px(7), background);
+            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Px(7), hoverBackground);
         }
 
         Color glyph = close && highlight ? Color.White : Theme.TextSecondary;
@@ -341,42 +361,56 @@ internal sealed class CaptionButton : PaintedControl
                 g.DrawLine(pen, cx + Px(5), cy - Px(5), cx - Px(5), cy + Px(5));
                 break;
 
-            case CaptionKind.Theme:
-                DrawThemeGlyph(g, pen, cx, cy, highlight);
+            case CaptionKind.Settings:
+                DrawSettingsGlyph(g, glyph, highlight ? hoverBackground : Theme.Surface, cx, cy);
                 break;
         }
     }
 
-    private void DrawThemeGlyph(Graphics g, Pen pen, float cx, float cy, bool highlight)
+    /// <summary>齿轮图标：8 个梯形齿 + 实心圆盘 + 中心镂空，小尺寸下也能明确识别。</summary>
+    private void DrawSettingsGlyph(Graphics g, Color glyph, Color background, float cx, float cy)
     {
-        float radius = Px(5);
+        float root = Px(4.9f);    // 齿根半径
+        float tip = Px(8.1f);     // 齿顶半径
+        float halfTip = Px(1.75f); // 齿顶半宽
+        float halfRoot = halfTip * 1.35f;
 
-        if (Theme.DarkMode)
+        using var path = new GraphicsPath(FillMode.Winding);
+        for (int i = 0; i < 8; i++)
         {
-            // 深色模式显示太阳（点击切到浅色）
-            g.DrawEllipse(pen, cx - radius, cy - radius, radius * 2, radius * 2);
-            for (int i = 0; i < 8; i++)
+            double angle = Math.PI / 4 * i;
+            double cos = Math.Cos(angle);
+            double sin = Math.Sin(angle);
+            double tx = -sin;
+            double ty = cos;
+
+            PointF Root(float offset) => new(
+                (float)(cx + cos * root + tx * offset),
+                (float)(cy + sin * root + ty * offset));
+            PointF Tip(float offset) => new(
+                (float)(cx + cos * tip + tx * offset),
+                (float)(cy + sin * tip + ty * offset));
+
+            path.AddPolygon(new[]
             {
-                double angle = Math.PI / 4 * i;
-                float x1 = cx + (float)Math.Cos(angle) * Px(7.5f);
-                float y1 = cy + (float)Math.Sin(angle) * Px(7.5f);
-                float x2 = cx + (float)Math.Cos(angle) * Px(9.5f);
-                float y2 = cy + (float)Math.Sin(angle) * Px(9.5f);
-                g.DrawLine(pen, x1, y1, x2, y2);
-            }
+                Root(-halfRoot),
+                Tip(-halfTip),
+                Tip(halfTip),
+                Root(halfRoot),
+            });
         }
-        else
+
+        path.AddEllipse(cx - root, cy - root, root * 2, root * 2);
+
+        using (var brush = new SolidBrush(glyph))
         {
-            // 浅色模式显示月亮（点击切到深色）
-            Color background = highlight ? Theme.CaptionHover : Theme.Surface;
-            using (var brush = new SolidBrush(Theme.TextSecondary))
-            {
-                g.FillEllipse(brush, cx - radius, cy - radius, radius * 2, radius * 2);
-            }
-            using (var brush = new SolidBrush(background))
-            {
-                g.FillEllipse(brush, cx - radius + Px(3.2f), cy - radius - Px(1.6f), radius * 2, radius * 2);
-            }
+            g.FillPath(brush, path);
+        }
+
+        float hole = Px(2.5f);
+        using (var brush = new SolidBrush(background))
+        {
+            g.FillEllipse(brush, cx - hole, cy - hole, hole * 2, hole * 2);
         }
     }
 

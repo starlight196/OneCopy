@@ -12,6 +12,9 @@ obj/
 # Build output
 publish/
 
+# 本地调试截图 / 自检产物
+.artifacts/
+
 # 本地打包的发布产物
 OneCopy-v*/
 OneCopy-v*.zip

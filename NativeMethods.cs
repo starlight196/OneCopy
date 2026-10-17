@@ -62,6 +62,24 @@ internal static class NativeMethods
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
+    /// <summary>读取 DWM 窗口属性（例如圆角偏好）。</summary>
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
+
+    /// <summary>GWL_STYLE 窗口样式索引。</summary>
+    public const int GWL_STYLE = -16;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+    private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
+
+    /// <summary>读取窗口样式位（WS_THICKFRAME / WS_CAPTION 等），用于自检窗口框架。</summary>
+    public static long GetWindowStyle(IntPtr hWnd) => IntPtr.Size == 8
+        ? GetWindowLongPtr64(hWnd, GWL_STYLE).ToInt64()
+        : GetWindowLong32(hWnd, GWL_STYLE);
+
     /// <summary>PrintWindow 默认行为：通过 WM_PRINT 让窗口自己绘制内容（能正确渲染自绘控件）。</summary>
     public const uint PW_DEFAULT = 0x00000000;
 
