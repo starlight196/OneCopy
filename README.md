@@ -1,6 +1,6 @@
 # OneCopy 重复文件清理工具
 
-> 只留一份，其余清掉。 ｜ 当前版本：**v1.5.1** ｜ [更新日志](CHANGELOG.md) ｜ [GPL-3.0 许可证](LICENSE)
+> 只留一份，其余清掉。 ｜ 当前版本：**v1.5.2** ｜ [更新日志](CHANGELOG.md) ｜ [GPL-3.0 许可证](LICENSE)
 
 **OneCopy** 是一个 Windows 原生桌面程序：扫描指定目录下内容完全相同的文件，按哈希分组展示，帮你只保留一份、安全地清掉多余副本。
 
@@ -38,6 +38,16 @@
 - **哈希**: SHA-256（CNG 硬件加速）/ XXH3-128 / BLAKE3（后两者为托管自实现，官方测试向量校验）
 - **并行**: `Parallel.ForEach` + `Task`
 
+## 安全性
+
+- **不会把文件名当命令执行**：程序只通过 .NET 文件系统 API 读取 / 比较 / 删除文件；唯一涉及界面的「在资源管理器中定位」通过 Windows Shell 的 PIDL 接口（`SHOpenFolderAndSelectItems`）完成，路径不经过 `explorer.exe` 命令行，文件名里的 `&`、`;`、`$()`、引号等字符只会被当作普通文件名。
+- **不调用命令解释器**：代码中没有任何 `cmd` / PowerShell / `mshta` / `rundll32` 调用；发行版（Release）不包含调试入口（`--preview`、`--smoke`、`--hash-test` 等仅 Debug 构建存在）。
+- **检查更新只读**：仅访问 `https://api.github.com` 读取最新版本号（HTTPS、10 秒超时、只读、限制响应大小），不下载、不自动安装或执行任何东西；「打开发布页 / 项目主页」只允许 GitHub 的 `http/https` 链接，其它链接（`file:`、`javascript:`、本地路径等）一律拒绝。
+- **无遥测**：不上传文件列表、路径、哈希或任何扫描数据。
+- **普通用户权限运行**：不需要管理员权限，不安装服务 / 驱动，不写注册表（只读取系统深色模式偏好用于主题）。
+- **扫描安全**：递归枚举跳过 Junction / 符号链接目录，避免扫描逃逸与死循环；无权限目录自动跳过。
+- **删除需确认**：只删除手动勾选的文件，删除前二次确认；删除为永久删除（不进回收站），请确认后使用。
+
 ## 编译运行
 
 ```bash
@@ -50,7 +60,7 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 
 > 开发调试（Debug 构建）：
 > - `dotnet run -c Debug -- --preview 输出.png [populated|empty|scanning|dialog|settings|settings-scanner|settings-exclusions|settings-update|settings-about] [dark|light|system]`：把窗口显示在屏幕外并用 `PrintWindow` 截取真实渲染效果
-> - `dotnet run -c Debug -- --smoke 输出.png`：真实启动窗口，自检缩放边界 / 最大化布局 / 标题栏按钮 / 暂停与停止按钮 / 勾选联动 / 确认对话框 / 设置窗口各页面与外观实时预览 / 哈希算法测试向量 / 暂停闸门 / 窗口圆角样式 / 排除扩展名扫描并截图
+> - `dotnet run -c Debug -- --smoke 输出.png`：真实启动窗口，自检缩放边界 / 最大化布局 / 标题栏按钮 / 暂停与停止按钮 / 勾选联动 / 确认对话框 / 设置窗口各页面与外观实时预览 / 哈希算法测试向量 / 暂停闸门 / 窗口圆角样式 / 排除扩展名扫描 / 恶意文件名安全用例并截图
 > - `dotnet run -c Debug -- --hash-test 输出.log`：用官方测试向量校验 SHA-256 / XXH3-128 / BLAKE3，并检查流式与一次性计算结果一致
 > - `dotnet run -c Debug -- --screen-capture 输出.png [settings|main] [dark|light|system]`：真正显示到屏幕上截图，用于检查 DWM 圆角（窗口会短暂出现）
 
@@ -83,8 +93,9 @@ OneCopy/
 ├── app.ico                 # 多尺寸应用图标（exe 文件 / 窗口 / 任务栏）
 ├── OneCopy.csproj
 └── publish/                # 发布输出（git 忽略）
-    ├── OneCopy.exe                     # 单文件可执行程序（v1.5.1）
-    └── OneCopy-v1.5.1.zip              # 发布压缩包
+    ├── OneCopy.exe                     # 单文件可执行程序（v1.5.2）
+    ├── OneCopy-v1.5.2.zip              # 发布压缩包
+    └── SHA256SUMS-v1.5.2.txt           # 发布文件校验和
 ```
 
 ## 许可

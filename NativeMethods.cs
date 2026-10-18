@@ -85,4 +85,22 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint flags);
+
+    // ===== Shell：在资源管理器中定位文件 =====
+    // 通过 PIDL（Shell 项标识符）把路径交给系统，不经过 explorer.exe 命令行；
+    // 文件名里的空格、&、引号等字符只作为文件系统项，不会被当作命令或参数解析。
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr ILCreateFromPathW(string pszPath);
+
+    [DllImport("shell32.dll")]
+    public static extern void ILFree(IntPtr pidl);
+
+    /// <summary>
+    /// 打开文件所在文件夹并选中该项。cidl = 0 时 pidlFolder 指向单个完整项，
+    /// 系统会打开其父文件夹并选中它（MSDN：SHOpenFolderAndSelectItems）。
+    /// </summary>
+    [DllImport("shell32.dll")]
+    public static extern int SHOpenFolderAndSelectItems(
+        IntPtr pidlFolder, uint cidl, IntPtr apidl, uint dwFlags);
 }

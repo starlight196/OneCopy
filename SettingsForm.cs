@@ -938,6 +938,9 @@ internal sealed class SettingsForm : ChromeForm
 
     private static void OpenUrl(string url)
     {
+        // 只允许打开 GitHub 的 http/https 链接：即使链接被伪造，也不会执行本地程序或打开本地文件。
+        if (!UpdateChecker.IsAllowedUrl(url)) return;
+
         try
         {
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });

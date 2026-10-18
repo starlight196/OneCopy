@@ -2,6 +2,8 @@
 // Copyright (C) 2026 starlight196
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Diagnostics;
+
 namespace OneCopy;
 
 static class Program
@@ -172,6 +174,15 @@ static class Program
             catch (Exception ex)
             {
                 lines.Add("pauseScan=fail " + ex.Message);
+            }
+
+            try
+            {
+                RunSecuritySelfCheck(lines, fullPath);
+            }
+            catch (Exception ex)
+            {
+                lines.Add("security=fail " + ex.Message);
             }
 
             try
@@ -614,6 +625,131 @@ static class Program
                 // 忽略
             }
         }
+    }
+
+    /// <summary>
+    /// 安全性自检：
+    /// 1. 文件名里带命令拼接符（&amp;、$( )、!、%VAR%、;、^ 等）时只被当作普通文件，
+    ///    扫描、哈希、列表展示都不会启动任何程序；
+    /// 2. 检查更新的链接只允许 GitHub 的 http/https，file:/本地 exe/其它域名一律拒绝。
+    /// </summary>
+    private static void RunSecuritySelfCheck(List<string> lines, string screenshotPath)
+    {
+        string? directory = Path.GetDirectoryName(Path.GetFullPath(screenshotPath));
+        string testDir = Path.Combine(directory ?? ".", "security-test");
+
+        // 这些字符在 Windows 文件名中合法，但放进 cmd / PowerShell 会被当成命令拼接符
+        string[] hostileNames =
+        {
+            "a & calc.exe.txt",
+            "b & calc.exe.txt",
+            "$(Start-Process calc).txt",
+            "$(Start-Process calc)(2).txt",
+            "!calc!.txt",
+            "%COMSPEC%.txt",
+            "; calc.txt",
+            "^& calc.txt",
+            "'calc'.txt",
+            "重复 & 文件.txt",
+            "空格 文件名 (1).txt",
+            "dot...dots.txt",
+        };
+
+        try
+        {
+            Directory.CreateDirectory(testDir);
+            // 所有文件内容相同 → 应被识别为一组重复文件（共 14 个）
+            foreach (string name in hostileNames)
+            {
+                File.WriteAllText(Path.Combine(testDir, name), "same-content");
+            }
+            File.WriteAllText(Path.Combine(testDir, "fake & calc.bat"), "same-content");
+            File.WriteAllText(Path.Combine(testDir, "fake & calc.ps1"), "same-content");
+
+            // 记录扫描前后可疑进程数：文件名不会被当成命令执行
+            string[] watched = { "calc", "cmd", "powershell", "mshta", "rundll32" };
+            Dictionary<string, int> before = CountProcesses(watched);
+
+            var scanner = new FileScanner();
+            Task<List<DuplicateGroup>> task = scanner.ScanAsync(
+                testDir, new Progress<ScanProgress>(), CancellationToken.None);
+            if (!WaitWithEvents(task, 20000))
+            {
+                lines.Add("securityScan=timeout");
+                return;
+            }
+
+            List<DuplicateGroup> groups = task.GetAwaiter().GetResult();
+            List<FileItem> files = groups.SelectMany(g => g.Files).ToList();
+
+            // 每个路径都能生成 Shell PIDL（定位文件改用 PIDL，不再拼接 explorer 命令行）
+            int pidlCreated = 0;
+            foreach (FileItem file in files)
+            {
+                IntPtr pidl = NativeMethods.ILCreateFromPathW(file.FilePath);
+                if (pidl != IntPtr.Zero)
+                {
+                    pidlCreated++;
+                    NativeMethods.ILFree(pidl);
+                }
+            }
+
+            Dictionary<string, int> after = CountProcesses(watched);
+            bool spawned = watched.Any(name => after.GetValueOrDefault(name) > before.GetValueOrDefault(name));
+            int foundHostile = hostileNames.Count(n => files.Any(f => f.FileName == n));
+
+            lines.Add(
+                $"securityNames files={hostileNames.Length + 2} groups={groups.Count} " +
+                $"scanned={files.Count} foundHostile={foundHostile}/{hostileNames.Length} " +
+                $"pidlCreated={pidlCreated} spawnedProcesses={spawned}");
+            lines.Add(
+                $"securityUrl github={UpdateChecker.IsAllowedUrl("https://github.com/starlight196/OneCopy/releases")} " +
+                $"api={UpdateChecker.IsAllowedUrl("https://api.github.com/repos/starlight196/OneCopy/releases/latest")} " +
+                $"rejectFile={!UpdateChecker.IsAllowedUrl("file:///C:/Windows/System32/calc.exe")} " +
+                $"rejectLocal={!UpdateChecker.IsAllowedUrl("C:\\Windows\\System32\\calc.exe")} " +
+                $"rejectOtherHost={!UpdateChecker.IsAllowedUrl("https://example.com/calc.exe")} " +
+                $"rejectScript={!UpdateChecker.IsAllowedUrl("javascript:alert(1)")}");
+        }
+        catch (Exception ex)
+        {
+            lines.Add("security=fail " + ex);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(testDir, true);
+            }
+            catch
+            {
+                // 忽略
+            }
+        }
+    }
+
+    private static Dictionary<string, int> CountProcesses(string[] names)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (Process process in Process.GetProcesses())
+        {
+            try
+            {
+                string name = process.ProcessName;
+                if (names.Any(n => n.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    counts[name] = counts.GetValueOrDefault(name) + 1;
+                }
+            }
+            catch
+            {
+                // 进程可能已退出，忽略
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+        return counts;
     }
 
     /// <summary>验证全局排除扩展名同时作用于快速统计与哈希扫描。</summary>

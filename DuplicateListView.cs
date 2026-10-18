@@ -496,11 +496,42 @@ internal sealed class DuplicateListView : PaintedControl
         }
     }
 
+    /// <summary>
+    /// 在资源管理器中定位文件。
+    /// 使用 Shell 的 PIDL 接口而不是 explorer.exe 命令行：路径只作为文件系统项传递，
+    /// 文件名里的 &amp;、引号、分号等字符不会被命令解析，也不会启动任何外部程序。
+    /// </summary>
     private static void RevealInExplorer(string path)
     {
         try
         {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+            // cidl = 0 时 pidlFolder 指向单个完整项，系统会打开父文件夹并选中它（见 MSDN）。
+            IntPtr pidl = NativeMethods.ILCreateFromPathW(path);
+            if (pidl != IntPtr.Zero)
+            {
+                try
+                {
+                    if (NativeMethods.SHOpenFolderAndSelectItems(pidl, 0, IntPtr.Zero, 0) >= 0) return;
+                }
+                finally
+                {
+                    NativeMethods.ILFree(pidl);
+                }
+            }
+        }
+        catch
+        {
+            // 落到下面的兜底逻辑
+        }
+
+        // 兜底：只打开所在目录，同样不拼接任何命令行参数
+        try
+        {
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });
+            }
         }
         catch
         {

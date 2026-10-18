@@ -98,6 +98,12 @@ internal static class UpdateChecker
                 return UpdateCheckResult.Failed($"更新服务器返回 HTTP {(int)response.StatusCode}，请稍后再试。");
             }
 
+            // 防御性检查：正常的 Release JSON 只有几 KB，过大的响应直接拒绝，避免被异常数据拖垮
+            if (response.Content.Headers.ContentLength is long contentLength && contentLength > 1024 * 1024)
+            {
+                return UpdateCheckResult.Failed("更新服务器返回的数据异常，请稍后再试。");
+            }
+
             string json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             using JsonDocument document = JsonDocument.Parse(json);
             JsonElement root = document.RootElement;
@@ -108,6 +114,7 @@ internal static class UpdateChecker
             string url = root.TryGetProperty("html_url", out JsonElement urlElement)
                 ? urlElement.GetString() ?? ReleasesUrl
                 : ReleasesUrl;
+            if (!IsAllowedUrl(url)) url = ReleasesUrl;
 
             Version? latest = ParseVersion(tag);
             Version? current = ParseVersion(CurrentVersion);
@@ -139,6 +146,21 @@ internal static class UpdateChecker
         Version? left = ParseVersion(candidate);
         Version? right = ParseVersion(current);
         return left is not null && right is not null && left > right;
+    }
+
+    /// <summary>
+    /// 只允许打开 GitHub 的 http/https 链接。
+    /// 链接来自网络响应，即使被篡改也只会被忽略，不会被 UseShellExecute 拉起本地的 exe / 脚本；
+    /// file:、javascript:、本地路径等一律拒绝。
+    /// </summary>
+    internal static bool IsAllowedUrl(string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return false;
+
+        string host = uri.Host;
+        return host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".github.com", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>把 "v1.3.0"、"1.3"、"1.3.0+abc" 等文本解析为 Version。</summary>
